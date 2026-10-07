@@ -54,7 +54,7 @@ class SecurityAgent:
     async def run(
         self,
         problem: str,
-        context: Optional[str] = None,
+        context: Optional[Union[str, dict]] = None,
         research: Optional[Union[ResearchResult, dict]] = None,
         strategy: Optional[Union[StrategyResult, dict]] = None,
         engineering: Optional[Any] = None,
@@ -73,6 +73,15 @@ class SecurityAgent:
         Returns:
             SecurityResult with technical security findings or status='failed'.
         """
+        # If context is passed as a dict, pull any embedded upstream outputs if not explicitly passed
+        if isinstance(context, dict):
+            if engineering is None:
+                engineering = context.get("engineer") or context.get("engineering")
+            if research is None:
+                research = context.get("researcher") or context.get("research")
+            if strategy is None:
+                strategy = context.get("strategist") or context.get("strategy")
+
         # 1. Parse optional upstream models if provided as dicts
         parsed_research: Optional[ResearchResult] = None
         if research is not None:

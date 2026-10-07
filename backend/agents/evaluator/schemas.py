@@ -1,10 +1,4 @@
-"""
-Structured Pydantic schemas for the CHAI Evaluator Agent.
 
-These schemas define the contract for the Evaluator Agent (cross-agent conflicts,
-requirement coverage, logical inconsistencies, unsupported claims, quality issues,
-strengths, recommendations, assumptions, and missing information).
-"""
 
 from __future__ import annotations
 

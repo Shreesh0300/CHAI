@@ -51,8 +51,14 @@ def build_strategy_prompt(
         f"ORIGINAL PROBLEM STATEMENT:\n{problem.strip()}\n"
     ]
 
-    if context and context.strip():
-        prompt_lines.append(f"ADDITIONAL CONTEXT:\n{context.strip()}\n")
+    if context:
+        if isinstance(context, dict):
+            import json
+            context_str = json.dumps(context, default=str)
+        else:
+            context_str = str(context).strip()
+        if context_str:
+            prompt_lines.append(f"ADDITIONAL CONTEXT:\n{context_str}\n")
 
     prompt_lines.append("STRUCTURED RESEARCH FINDINGS (from Researcher Agent):")
 

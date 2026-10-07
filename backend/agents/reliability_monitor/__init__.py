@@ -1,8 +1,5 @@
 """
-Reliability monitor bridge module.
-
-Re-exports the core ReliabilityMonitorAgent and schemas from
-`backend.agents.reliability_monitor` for backwards compatibility.
+CHAI Reliability Monitor Agent package.
 """
 
 from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent

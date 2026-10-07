@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List
+from typing import Literal, Optional, List, Union
 from pydantic import BaseModel, Field, field_validator
 from backend.agents.researcher.models import ResearchResult
 
@@ -10,7 +10,7 @@ class StrategyInput(BaseModel):
     """
     problem: str = Field(description="The problem statement to develop a strategy for")
     research: ResearchResult = Field(description="Structured research findings from the Researcher Agent")
-    context: Optional[str] = Field(default=None, description="Optional domain or contextual background")
+    context: Optional[Union[str, dict]] = Field(default=None, description="Optional domain or contextual background")
 
     @field_validator("problem")
     @classmethod
