@@ -8,7 +8,8 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "chai-backend"}
 
-def test_solve_endpoint():
+def test_solve_endpoint(monkeypatch):
+    monkeypatch.setenv("CHAI_MOCK_MODE", "true")
     payload = {"problem": "Test problem"}
     response = client.post("/api/solve", json=payload)
     assert response.status_code == 200
