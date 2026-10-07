@@ -3,6 +3,7 @@ from typing import List, Optional, Any, Dict
 
 class SolveRequest(BaseModel):
     problem: str = Field(..., description="The user's problem or query.")
+    selected_agents: Optional[List[str]] = Field(default=None, description="Optional override list of agents to execute.")
 
 class AgentExecutionStatus(BaseModel):
     agent_name: str

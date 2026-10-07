@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Any
+from typing import Literal, Optional, Any, Union
 from pydantic import BaseModel, Field, field_validator
 from backend.agents.researcher.models import ResearchResult
 from backend.agents.strategist.models import StrategyResult
@@ -11,7 +11,7 @@ class SecurityInput(BaseModel):
     research, strategy, or engineering specifications provided.
     """
     problem: str = Field(description="The problem statement to evaluate for technical security risks")
-    context: Optional[str] = Field(default=None, description="Optional domain or contextual background")
+    context: Optional[Union[str, dict]] = Field(default=None, description="Optional domain or contextual background")
     research: Optional[ResearchResult] = Field(default=None, description="Optional structured research findings")
     strategy: Optional[StrategyResult] = Field(default=None, description="Optional strategic roadmap and priorities")
     engineering: Optional[Any] = Field(default=None, description="Optional engineering architecture or implementation details")

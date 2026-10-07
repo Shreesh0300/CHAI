@@ -89,10 +89,15 @@ class GeminiClient:
 
         try:
             import google.generativeai as genai
-            model = genai.GenerativeModel(
-                model_name=self.model_name,
-                system_instruction=system_instruction
-            )
+            try:
+                model = genai.GenerativeModel(
+                    model_name=self.model_name,
+                    system_instruction=system_instruction
+                )
+            except TypeError:
+                model = genai.GenerativeModel(model_name=self.model_name)
+                if system_instruction:
+                    prompt = f"System Instruction:\n{system_instruction}\n\nUser Request:\n{prompt}"
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:
