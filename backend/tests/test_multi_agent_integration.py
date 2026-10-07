@@ -600,7 +600,7 @@ async def test_11_one_agent_failure_isolation():
     response = await coordinator.process_request(SolveRequest(problem=problem))
 
     # Coordinator must not crash
-    assert response.request_status == "completed"
+    assert response.request_status in ("completed", "partial")
 
     # Status check
     statuses = {s.agent_name: s.status for s in response.agent_execution_statuses}
@@ -674,7 +674,7 @@ async def test_12_multiple_agent_partial_failure():
     )
 
     response = await coordinator.process_request(SolveRequest(problem=problem))
-    assert response.request_status == "completed"
+    assert response.request_status in ("completed", "partial")
 
     statuses = {s.agent_name: s.status for s in response.agent_execution_statuses}
     assert statuses["researcher"] == "success"

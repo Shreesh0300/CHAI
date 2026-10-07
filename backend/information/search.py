@@ -135,15 +135,8 @@ class MockSearchProvider(BaseSearchProvider):
 
 
 def get_web_search_api_key() -> str:
-    """Safely retrieves the web search API key from environment or settings."""
-    key = os.getenv("WEB_SEARCH_API_KEY", "")
-    if not key:
-        try:
-            from backend.config import get_settings
-            key = get_settings().web_search_api_key
-        except Exception:
-            key = ""
-    return (key or "").strip()
+    """Safely retrieves the web search API key from environment."""
+    return os.getenv("WEB_SEARCH_API_KEY", "").strip()
 
 
 class TavilySearchProvider(BaseSearchProvider):
@@ -161,7 +154,7 @@ class TavilySearchProvider(BaseSearchProvider):
         endpoint_url: str = DEFAULT_ENDPOINT,
         timeout_seconds: float = 8.0,
     ):
-        self.api_key = (api_key or get_web_search_api_key()).strip()
+        self.api_key = (api_key if api_key is not None else get_web_search_api_key()).strip()
         self.endpoint_url = endpoint_url
         self.timeout_seconds = timeout_seconds
 

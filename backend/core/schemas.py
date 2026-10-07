@@ -40,6 +40,7 @@ class SolveRequest(BaseModel):
     problem: str = Field(..., description="The user's problem or query.")
     user_id: Optional[str] = Field(None, description="Optional user identifier.")
     context: Optional[str] = Field(None, description="Optional environmental or domain context.")
+    selected_agents: Optional[List[str]] = Field(default=None, description="Optional override list of agents to execute.")
 
 
 class CHAIExecutionResult(BaseModel):

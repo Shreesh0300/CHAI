@@ -77,8 +77,8 @@ class StrategistAgent:
     async def run(
         self,
         problem: str,
-        research: Union[ResearchResult, dict],
-        context: Optional[str] = None,
+        research: Optional[Union[ResearchResult, dict]] = None,
+        context: Optional[Union[str, dict]] = None,
     ) -> StrategyResult:
         """
         Executes the strategy synthesis workflow grounded in ResearchResult.
@@ -91,6 +91,10 @@ class StrategistAgent:
         Returns:
             StrategyResult with practical strategy and roadmap or status='failed'.
         """
+        # If research is not passed directly, attempt to pull it from context dict
+        if research is None and isinstance(context, dict):
+            research = context.get("researcher_output") or context.get("research")
+
         # 1. Validate ResearchResult presence and structure
         if research is None:
             logger.error("Missing ResearchResult: StrategistAgent requires structured research input.")

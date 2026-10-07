@@ -188,6 +188,18 @@ class ValidationResult(AgentResult):
     is_valid: bool = Field(default=True, description="Whether output passed all validation checks")
     issues: List[str] = Field(default_factory=list, description="Identified validation issues or warnings")
     sanitized_text: str = Field(default="", description="Sanitized, verified final answer text")
+    sanitized_output: Optional[str] = Field(default=None, description="Sanitized final text")
+    errors: List[str] = Field(default_factory=list, description="Validation errors")
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.sanitized_output and self.sanitized_text:
+            self.sanitized_output = self.sanitized_text
+        elif not self.sanitized_text and self.sanitized_output:
+            self.sanitized_text = self.sanitized_output
+        if not self.errors and self.issues:
+            self.errors = list(self.issues)
+        elif not self.issues and self.errors:
+            self.issues = list(self.errors)
 
 
 # Aliases for convenience

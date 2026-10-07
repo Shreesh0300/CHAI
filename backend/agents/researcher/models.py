@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Any
+from typing import Literal, Optional, Any, Union, Dict, List
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -18,7 +18,7 @@ class ResearchInput(BaseModel):
     Validates that problem statement is non-empty.
     """
     problem: str = Field(description="User problem statement or requirements to investigate")
-    context: Optional[str] = Field(default=None, description="Optional domain or contextual background")
+    context: Optional[Union[str, Dict[str, Any], Any]] = Field(default=None, description="Optional domain or contextual background")
     acquired_information: list[Any] = Field(default_factory=list, description="Pre-acquired evidence or records")
     sources: list[Source] = Field(default_factory=list, description="Explicit sources provided to the agent")
 

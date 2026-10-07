@@ -89,19 +89,21 @@ class GeminiClient:
 
         try:
             import google.generativeai as genai
-            import inspect
-
-            kwargs = {"model_name": self.model_name}
-            full_prompt = prompt
             if system_instruction:
-                sig = inspect.signature(genai.GenerativeModel.__init__)
-                if "system_instruction" in sig.parameters:
-                    kwargs["system_instruction"] = system_instruction
-                else:
-                    full_prompt = f"System Instruction:\n{system_instruction}\n\n{prompt}"
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=self.model_name,
+                        system_instruction=system_instruction,
+                    )
+                    content_prompt = prompt
+                except TypeError:
+                    model = genai.GenerativeModel(model_name=self.model_name)
+                    content_prompt = f"System Instruction:\n{system_instruction}\n\nUser Request:\n{prompt}"
+            else:
+                model = genai.GenerativeModel(model_name=self.model_name)
+                content_prompt = prompt
 
-            model = genai.GenerativeModel(**kwargs)
-            response = await model.generate_content_async(full_prompt)
+            response = await model.generate_content_async(content_prompt)
             return response.text
         except Exception as e:
             logger.error(f"Error calling Gemini API: {e}")
