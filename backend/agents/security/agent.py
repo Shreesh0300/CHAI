@@ -1,3 +1,4 @@
+import os
 import json
 import re
 from typing import Optional, Any, Union
@@ -50,6 +51,53 @@ class SecurityAgent:
         except Exception as e:
             logger.error(f"Failed to initialize Gemini LLM client in SecurityAgent: {e}")
             return None
+
+    def _make_mock_output(self, problem: str) -> SecurityResult:
+        """Returns a plausible mock SecurityResult when mock mode is enabled."""
+        return SecurityResult(
+            agent="security",
+            status="completed",
+            security_summary=f"[Mock] Technical cybersecurity evaluation for: {problem}",
+            attack_surfaces=[
+                "[Mock] Public API endpoints",
+                "[Mock] Client-side application bundle",
+                "[Mock] Data synchronization protocol",
+            ],
+            threats=[
+                "[Mock] Unauthorized access via broken object level authorization (BOLA)",
+                "[Mock] In-transit data interception without strict transport security",
+            ],
+            authentication_risks=[
+                "[Mock] Insecure token storage or weak session invalidation",
+            ],
+            authorization_risks=[
+                "[Mock] Missing granular role-based access control (RBAC)",
+            ],
+            data_privacy_risks=[
+                "[Mock] Unencrypted sensitive records in local client cache",
+            ],
+            api_security_risks=[
+                "[Mock] Lack of rate limiting on public facing endpoints",
+            ],
+            prompt_injection_risks=[
+                "[Mock] Untrusted user inputs reaching model prompt context",
+            ],
+            secret_exposure_risks=[
+                "[Mock] API keys or backend credentials exposed in client builds",
+            ],
+            severity_levels=["High", "Medium"],
+            mitigations=[
+                "[Mock] Enforce TLS 1.3 and mTLS on synchronization channels",
+                "[Mock] Implement local SQLCipher encryption for cached data",
+                "[Mock] Sanitize and delimit all external text inputs to prevent prompt injection",
+            ],
+            security_assumptions=[
+                "[Mock] Backend deployment enforces container isolation and secret managers",
+            ],
+            limitations=[
+                "[Mock] Automated threat modeling pending live LLM verification",
+            ],
+        )
 
     async def run(
         self,
@@ -115,6 +163,11 @@ class SecurityAgent:
         except Exception as e:
             logger.error(f"Input validation failed for SecurityAgent: {e}")
             raise ValueError(f"Input validation failed: {e}")
+
+        # Check explicit mock mode
+        if os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes"):
+            logger.info("SecurityAgent: running in mock mode.")
+            return self._make_mock_output(problem)
 
         # 3. Obtain LLM client
         llm = self._get_llm()

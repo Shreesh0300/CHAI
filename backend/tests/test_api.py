@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -5,6 +6,16 @@ from backend.main import app
 from backend.api.routes import coordinator
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def enable_chai_mock_mode(monkeypatch):
+    monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+    from backend.core.coordinator import Coordinator
+    yield
+    fresh = Coordinator()
+    for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]:
+        setattr(coordinator, a, getattr(fresh, a))
 
 
 class MockSuccessOutput(BaseModel):
@@ -47,7 +58,8 @@ def test_health_check():
     assert response.json() == {"status": "ok", "service": "chai-backend"}
 
 
-def test_solve_endpoint():
+def test_solve_endpoint(monkeypatch):
+    monkeypatch.setenv("CHAI_MOCK_MODE", "true")
     setup_mock_agents(coordinator, {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]})
     payload = {"problem": "Test problem"}
     response = client.post("/api/solve", json=payload)
@@ -163,4 +175,3 @@ def test_solve_simple_direct_query_behavior():
     assert data_simple["request_status"] == "completed"
     assert data_simple["selected_agents"] == []
     assert data_simple["agent_execution_statuses"] == []
-

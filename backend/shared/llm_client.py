@@ -84,21 +84,26 @@ class GeminiClient:
 
     async def generate_content(self, prompt: str, system_instruction: str = None) -> str:
         """Asynchronous content generation compatible with earlier agents."""
-        if not self.api_key:
+        if not self.api_key or os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes"):
             return "Mock response: API key not configured."
 
         try:
             import google.generativeai as genai
-            try:
-                model = genai.GenerativeModel(
-                    model_name=self.model_name,
-                    system_instruction=system_instruction
-                )
-            except TypeError:
+            if system_instruction:
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=self.model_name,
+                        system_instruction=system_instruction,
+                    )
+                    content_prompt = prompt
+                except TypeError:
+                    model = genai.GenerativeModel(model_name=self.model_name)
+                    content_prompt = f"System Instruction:\n{system_instruction}\n\nUser Request:\n{prompt}"
+            else:
                 model = genai.GenerativeModel(model_name=self.model_name)
-                if system_instruction:
-                    prompt = f"System Instruction:\n{system_instruction}\n\nUser Request:\n{prompt}"
-            response = await model.generate_content_async(prompt)
+                content_prompt = prompt
+
+            response = await model.generate_content_async(content_prompt)
             return response.text
         except Exception as e:
             logger.error(f"Error calling Gemini API: {e}")

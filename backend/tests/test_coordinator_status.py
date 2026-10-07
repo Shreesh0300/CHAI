@@ -5,6 +5,11 @@ from backend.core.coordinator import Coordinator
 from backend.core.schemas import SolveRequest
 
 
+@pytest.fixture(autouse=True)
+def enable_chai_mock_mode(monkeypatch):
+    monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+
+
 class DummyAgentOutput(BaseModel):
     status: str = "completed"
     strategy: str = "Strategy overview"
