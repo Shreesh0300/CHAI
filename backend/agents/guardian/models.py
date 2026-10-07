@@ -1,9 +1,11 @@
-from pydantic import BaseModel
-from typing import Dict, List
+"""
+Backward-compatible models for the Guardian Agent.
 
-class GuardianOutput(BaseModel):
-    safety_and_privacy_risks: list[str]
-    reliability_and_ethical_risks: list[str]
-    unsafe_assumptions: list[str]
-    limitations: list[str]
-    recommended_mitigations: list[str]
+The Coordinator (``backend/core/coordinator.py``) imports ``GuardianOutput``
+from this module. We re-export the canonical definitions from ``schemas.py``
+so the import path remains completely stable.
+"""
+
+from backend.agents.guardian.schemas import GuardianOutput, GuardianResult  # noqa: F401
+
+__all__ = ["GuardianOutput", "GuardianResult"]
