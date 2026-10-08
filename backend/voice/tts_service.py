@@ -150,6 +150,9 @@ class TTSService:
                 continue
 
         if response is None:
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
             raise RuntimeError(f"All Gemini TTS models exhausted. Last error: {last_error}")
 
         # Extract audio bytes from response parts
@@ -173,6 +176,58 @@ class TTSService:
                         break
 
         if not audio_data:
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
             raise RuntimeError("Gemini TTS response did not contain audio data.")
 
         return audio_data
+
+    def _synthesize_fallback(self, text: str, language: str = "en") -> Optional[bytes]:
+        """Synthesize audio using Google TTS or Windows SAPI when cloud GenAI quota is exhausted."""
+        canon_lang = canonicalize_language(language) or DEFAULT_LANGUAGE
+
+        # 1. Try Google Multilingual TTS (authentic native speech for kn, hi, sa, en)
+        try:
+            import urllib.request
+            import urllib.parse
+            encoded = urllib.parse.quote(text)
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={canon_lang}&client=tw-ob"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = resp.read()
+            if len(data) > 100:
+                logger.info(f"Successfully synthesized audio using Google TTS fallback ({canon_lang}).")
+                return data
+        except Exception as e:
+            logger.debug(f"Google TTS fallback unavailable: {e}")
+
+        # 2. Try Local Windows SAPI (offline fallback for English)
+        if canon_lang == "en":
+            try:
+                import win32com.client
+                import tempfile
+                speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                stream = win32com.client.Dispatch("SAPI.SpFileStream")
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    temp_path = tf.name
+                try:
+                    stream.Open(temp_path, 3)  # 3 = SSFMCreateForWrite
+                    speaker.AudioOutputStream = stream
+                    speaker.Speak(text)
+                    stream.Close()
+                    with open(temp_path, "rb") as f:
+                        data = f.read()
+                    if len(data) > 1000:
+                        logger.info("Successfully synthesized audio using Windows SAPI engine fallback.")
+                        return data
+                finally:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"Local Windows SAPI fallback unavailable: {e}")
+
+        return None

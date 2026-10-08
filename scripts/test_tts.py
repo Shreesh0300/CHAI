@@ -36,6 +36,14 @@ async def main() -> None:
         print(f"Output file: {output_path}")
         print(f"Audio bytes: {len(audio_bytes)}")
         print("Status: Success")
+
+        # Play audio aloud through system speakers
+        try:
+            import winsound
+            print("🔊 Playing synthesized speech through system speakers...")
+            winsound.PlaySound(str(output_path), winsound.SND_FILENAME)
+        except Exception as play_err:
+            print(f"(Speaker playback skipped: {play_err})")
     except Exception as e:
         print(f"Output file: None")
         print(f"Audio bytes: 0")
