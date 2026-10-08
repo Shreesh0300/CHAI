@@ -1,10 +1,11 @@
-from pydantic import BaseModel
-from typing import Dict, List
+"""
+Backward-compatible models for the Evaluator Agent.
 
-class EvaluatorOutput(BaseModel):
-    detected_contradictions: list[str]
-    incompatible_assumptions: list[str]
-    requirement_coverage_issues: list[str]
-    unsupported_claims: list[str]
-    missing_evidence: list[str]
-    recommendations: list[str]
+The Coordinator (``backend/core/coordinator.py``) imports ``EvaluatorOutput``
+from this module. We re-export the canonical definitions from ``schemas.py``
+so the import path remains completely stable.
+"""
+
+from backend.agents.evaluator.schemas import EvaluatorOutput, EvaluatorResult  # noqa: F401
+
+__all__ = ["EvaluatorOutput", "EvaluatorResult"]

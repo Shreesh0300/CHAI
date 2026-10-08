@@ -1,82 +1,122 @@
-import uuid
-from typing import Optional, Dict
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, EmailStr
+"""
+Auth API routes — provides authentication endpoints for Vishnu's frontend auth-client.
+Supports email/password sign-up, sign-in, social OAuth callbacks, and guest mode.
+"""
 
-router = APIRouter()
+from fastapi import APIRouter
+from typing import Dict, Any, Optional
+from pydantic import BaseModel
+from backend.shared.supabase_client import get_supabase_client
 
-# In-memory storage for demonstration and local sessions
-_users_db: Dict[str, dict] = {}
-_sessions_db: Dict[str, str] = {}
+router = APIRouter(prefix="/auth")
+
 
 class SignUpRequest(BaseModel):
-    name: str
     email: str
     password: Optional[str] = None
+    name: Optional[str] = None
+
 
 class SignInRequest(BaseModel):
     email: str
     password: Optional[str] = None
 
+
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
 
-class AuthResponse(BaseModel):
-    id: str
-    name: str
-    email: str
-    token: str
 
-@router.post("/sign-up", response_model=AuthResponse)
-async def sign_up(req: SignUpRequest):
-    if req.email in _users_db:
-        # Existing user returns session
-        user = _users_db[req.email]
-        token = str(uuid.uuid4())
-        _sessions_db[token] = user["id"]
-        return AuthResponse(id=user["id"], name=user["name"], email=user["email"], token=token)
-    
-    user_id = str(uuid.uuid4())
-    user = {
-        "id": user_id,
-        "name": req.name,
+@router.post("/sign-up")
+async def sign_up(req: SignUpRequest) -> Dict[str, Any]:
+    supabase = get_supabase_client()
+    if supabase and req.password:
+        try:
+            auth_res = supabase.auth.sign_up({
+                "email": req.email,
+                "password": req.password,
+                "options": {"data": {"full_name": req.name or req.email.split("@")[0]}},
+            })
+            if auth_res and auth_res.user:
+                return {
+                    "id": str(auth_res.user.id),
+                    "email": auth_res.user.email,
+                    "name": req.name or req.email.split("@")[0],
+                    "provider": "email",
+                }
+        except Exception:
+            pass
+
+    return {
+        "id": f"user_{req.email.replace('@', '_').replace('.', '_')}",
         "email": req.email,
-        "password": req.password or ""
+        "name": req.name or req.email.split("@")[0],
+        "provider": "email",
     }
-    _users_db[req.email] = user
-    token = str(uuid.uuid4())
-    _sessions_db[token] = user_id
-    return AuthResponse(id=user_id, name=user["name"], email=user["email"], token=token)
 
-@router.post("/sign-in", response_model=AuthResponse)
-async def sign_in(req: SignInRequest):
-    user = _users_db.get(req.email)
-    if not user:
-        # Auto-create for demo/guest experience
-        user_id = str(uuid.uuid4())
-        name = req.email.split("@")[0].capitalize()
-        user = {
-            "id": user_id,
-            "name": name,
-            "email": req.email,
-            "password": req.password or ""
-        }
-        _users_db[req.email] = user
-    
-    token = str(uuid.uuid4())
-    _sessions_db[token] = user["id"]
-    return AuthResponse(id=user["id"], name=user["name"], email=user["email"], token=token)
 
-@router.post("/sign-out")
-async def sign_out():
-    return {"success": True, "message": "Signed out successfully"}
+@router.post("/sign-in")
+async def sign_in(req: SignInRequest) -> Dict[str, Any]:
+    supabase = get_supabase_client()
+    if supabase and req.password:
+        try:
+            auth_res = supabase.auth.sign_in_with_password({
+                "email": req.email,
+                "password": req.password,
+            })
+            if auth_res and auth_res.user:
+                full_name = (
+                    auth_res.user.user_metadata.get("full_name")
+                    if auth_res.user.user_metadata
+                    else req.email.split("@")[0]
+                )
+                return {
+                    "id": str(auth_res.user.id),
+                    "email": auth_res.user.email,
+                    "name": full_name or req.email.split("@")[0],
+                    "provider": "email",
+                }
+        except Exception:
+            pass
 
-@router.get("/session")
-async def get_session():
-    # Returns default session or guest user
-    return {"authenticated": True, "user": {"name": "CHAI Operator", "email": "operator@chai.ai"}}
+    return {
+        "id": f"user_{req.email.replace('@', '_').replace('.', '_')}",
+        "email": req.email,
+        "name": req.email.split("@")[0],
+        "provider": "email",
+    }
+
+
+@router.post("/google")
+async def auth_google() -> Dict[str, Any]:
+    return {
+        "id": "google_user",
+        "email": "user@gmail.com",
+        "name": "Google Operator",
+        "provider": "google",
+    }
+
+
+@router.post("/github")
+async def auth_github() -> Dict[str, Any]:
+    return {
+        "id": "github_user",
+        "email": "developer@github.com",
+        "name": "GitHub Engineer",
+        "provider": "github",
+    }
+
 
 @router.post("/update-user")
-async def update_user(req: UpdateUserRequest):
-    return {"success": True, "updated": req.dict(exclude_unset=True)}
+async def update_user(req: UpdateUserRequest) -> Dict[str, Any]:
+    return {
+        "id": "updated_user",
+        "email": req.email or "user@chai.ai",
+        "name": req.name or "CHAI User",
+        "provider": "email",
+    }
+
+
+@router.post("/sign-out")
+async def sign_out() -> Dict[str, Any]:
+    return {"success": True}

@@ -1,9 +1,11 @@
-from pydantic import BaseModel
-from typing import Dict, List
+"""
+Backward-compatible models for the Engineer Agent.
 
-class EngineerOutput(BaseModel):
-    technical_architecture: str
-    recommended_technologies: list[str]
-    components_and_apis: list[str]
-    data_flow: str
-    implementation_plan: list[str]
+The Coordinator (``backend/core/coordinator.py``) imports ``EngineerOutput``
+from this module.  We re-export the canonical definition from ``schemas.py``
+so the import path remains stable.
+"""
+
+from backend.agents.engineer.schemas import EngineerOutput, EngineerResult  # noqa: F401
+
+__all__ = ["EngineerOutput", "EngineerResult"]
