@@ -573,7 +573,8 @@ class TestSynthesizerFailuresAndRetries:
             result = await agent.run("Test problem")
 
         assert result.status == AgentStatus.FAILED
-        assert "API down" in result.final_answer
+        assert "API down" in (result.error or "")
+        assert "API down" not in result.final_answer
 
     @pytest.mark.asyncio
     async def test_malformed_json_triggers_retry(self):
@@ -614,7 +615,8 @@ class TestSynthesizerFailuresAndRetries:
 
         assert mock_llm.call_count == 2
         assert result.status == AgentStatus.FAILED
-        assert "failed after 2 attempts" in result.final_answer.lower()
+        assert "failed after 2 attempts" in (result.error or "").lower()
+        assert "failed after 2 attempts" not in result.final_answer.lower()
 
     @pytest.mark.asyncio
     async def test_mock_mode_fallback(self):
@@ -796,3 +798,250 @@ class TestSynthesizerFinalAnswerBehavior:
         assert not result.final_answer.startswith("Researcher said:")
         assert not "Engineer said:" in result.final_answer
         assert "edge-first" in result.final_answer.lower()
+
+
+# ==============================================================================
+# 9. CONFLICT RESOLVER INTEGRATION REGRESSION TESTS (CASES A, B, C)
+# ==============================================================================
+
+class TestConflictResolverIntegrationRegressions:
+    @pytest.mark.asyncio
+    async def test_case_a_zero_conflicts_succeeds(self, monkeypatch):
+        """CASE A: Conflict Resolver has zero conflicts -> Synthesizer succeeds without creating fake None conflict records."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "conflict_resolver": {
+                "agent": "conflict_resolver",
+                "status": "completed",
+                "resolutions": [],
+                "unresolved_conflicts": [],
+                "conflict": None,
+                "resolution": None,
+                "decision_basis": ["No material cross-agent conflicts detected."],
+            }
+        }
+        result = await agent.run("Design appointment system", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert result.resolved_conflicts == []
+        assert result.unresolved_conflicts == []
+        assert len(result.final_answer) > 0
+
+    @pytest.mark.asyncio
+    async def test_case_b_one_resolved_conflict_succeeds(self, monkeypatch):
+        """CASE B: Conflict Resolver has one resolved conflict -> Synthesizer succeeds and records it."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "conflict_resolver": {
+                "agent": "conflict_resolver",
+                "status": "completed",
+                "resolutions": [
+                    {
+                        "conflict": "Database choice: PostgreSQL vs MongoDB",
+                        "resolution": "Prefer PostgreSQL for ACID compliance",
+                        "preferred_option": "PostgreSQL",
+                        "reason": "ACID compliance overrides schema flexibility",
+                    }
+                ],
+                "unresolved_conflicts": [],
+            }
+        }
+        result = await agent.run("Design appointment system", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert len(result.resolved_conflicts) == 1
+        assert "PostgreSQL" in result.resolved_conflicts[0].resolution
+        assert result.resolved_conflicts[0].conflict == "Database choice: PostgreSQL vs MongoDB"
+
+    @pytest.mark.asyncio
+    async def test_case_c_unresolved_conflict_preserved(self, monkeypatch):
+        """CASE C: Conflict Resolver has unresolved conflict -> Synthesizer preserves it correctly."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "conflict_resolver": {
+                "agent": "conflict_resolver",
+                "status": "completed",
+                "resolutions": [],
+                "unresolved_conflicts": [
+                    {
+                        "conflict": "On-premise hardware vs cloud scaling",
+                        "reason_unresolved": "Client budget constraint unverified",
+                        "impact": "Infrastructure cost uncertainty",
+                    }
+                ],
+            }
+        }
+        result = await agent.run("Design appointment system", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert len(result.unresolved_conflicts) == 1
+        assert result.unresolved_conflicts[0].conflict == "On-premise hardware vs cloud scaling"
+        assert result.unresolved_conflicts[0].reason_unresolved == "Client budget constraint unverified"
+
+
+# ==============================================================================
+# 10. SYNTHESIS QUALITY, MULTI-SECTION STRUCTURE & INTEGRATION REGRESSIONS
+# ==============================================================================
+
+class TestSynthesisQualityAndRichnessRegressions:
+    @pytest.mark.asyncio
+    async def test_complex_query_produces_multi_section_markdown_answer(self, monkeypatch):
+        """1. Complex queries produce structured multi-section markdown deliverables."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "all_outputs": {
+                "researcher": {
+                    "findings": ["Healthcare interoperability requires HL7/FHIR compliance."],
+                    "sources": [{"title": "HL7 FHIR Overview", "url": "https://hl7.org/fhir"}],
+                },
+                "strategist": {
+                    "strategy": "Deploy phased healthcare telemetry architecture.",
+                    "priorities": ["Patient privacy first", "Sub-second triage latency"],
+                    "milestones": [{"phase": "Phase 1", "description": "Core PHI vault"}],
+                },
+                "engineer": {
+                    "technical_architecture": "Microservices on Kubernetes with Redis caching and PostgreSQL.",
+                    "components": ["API Gateway", "Auth Service", "EMR Integration Pipeline"],
+                    "technology_recommendations": [{"technology": "FastAPI", "purpose": "Async REST APIs", "rationale": "High throughput"}],
+                    "technical_risks": [{"risk": "Database connection saturation", "impact": "High", "mitigation": "Connection pooling via PgBouncer"}],
+                },
+                "guardian": {
+                    "safety_assessment": "Enforce strict PHI pseudonymization and HIPAA compliance audits.",
+                    "recommended_mitigations": ["Enforce RBAC", "Audit log all EMR reads"],
+                },
+                "security": {
+                    "security_summary": "Defense-in-depth with TLS 1.3, AES-256-GCM, and mTLS between services.",
+                    "threats": ["BOLA/IDOR on patient appointment endpoints", "Prompt injection via doctor notes"],
+                    "mitigations": ["Object-level authorization on all handlers", "Sanitization middleware"],
+                },
+                "evaluator": {
+                    "overall_assessment": "Solution is feasible but requires clear network partition strategy.",
+                    "coverage_gaps": ["Disaster recovery strategy unspecified"],
+                },
+                "conflict_resolver": {
+                    "status": "completed",
+                    "resolutions": [
+                        {
+                            "conflict": "Cloud vs on-premise storage",
+                            "resolution": "Hybrid cloud with on-premise PHI cold storage",
+                            "source": "conflict_resolver",
+                        }
+                    ],
+                },
+            }
+        }
+
+        result = await agent.run(
+            "Design a secure and scalable AI healthcare platform for rural areas with privacy, reliability, cost, and deployment considerations.",
+            context=context,
+        )
+
+        assert result.status == AgentStatus.COMPLETED
+        # Verify substantial, multi-section Markdown structure
+        assert "## Executive Summary" in result.final_answer
+        assert "## Recommended Solution & Strategy" in result.final_answer
+        assert "## Technical Architecture & System Design" in result.final_answer
+        assert "## Security, Privacy & Safety Guardrails" in result.final_answer
+        assert "## Trade-offs & Reconciled Decisions" in result.final_answer
+        assert "## Risks & Mitigations" in result.final_answer
+        assert "## Implementation Roadmap" in result.final_answer
+        assert len(result.final_answer.splitlines()) > 15
+
+    @pytest.mark.asyncio
+    async def test_engineer_guardian_security_findings_reflected(self, monkeypatch):
+        """2 & 3. Engineer, Guardian, and Security findings are reflected in final answer."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "all_outputs": {
+                "engineer": {
+                    "technical_architecture": "Distributed Kafka event streams with ClickHouse analytics.",
+                    "components": ["Kafka Message Broker", "ClickHouse Analytical DB"],
+                },
+                "guardian": {
+                    "safety_assessment": "Strict algorithmic fairness monitoring for triage allocations.",
+                    "recommended_mitigations": ["Annual demographic parity audits"],
+                },
+                "security": {
+                    "security_summary": "Zero-trust network architecture with SPIFFE/SPIRE workload identities.",
+                    "threats": ["Man-in-the-middle on edge nodes"],
+                    "mitigations": ["Mutual TLS enforcement on all links"],
+                },
+            }
+        }
+        result = await agent.run("Design high-throughput edge telemetry pipeline", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert "Kafka Message Broker" in result.final_answer
+        assert "Zero-trust network architecture" in result.final_answer
+        assert "algorithmic fairness" in result.final_answer
+
+    @pytest.mark.asyncio
+    async def test_conflict_resolver_decision_reflected(self, monkeypatch):
+        """5. Conflict Resolver decisions are explicitly reflected."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "all_outputs": {
+                "conflict_resolver": {
+                    "status": "completed",
+                    "resolutions": [
+                        {
+                            "conflict": "Real-time sync vs batch updates",
+                            "resolution": "Use incremental batch updates with WebSocket push notifications",
+                            "source": "conflict_resolver",
+                        }
+                    ],
+                }
+            }
+        }
+        result = await agent.run("Optimize mobile sync architecture", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert "Real-time sync vs batch updates" in result.final_answer
+        assert "incremental batch updates" in result.final_answer
+
+    @pytest.mark.asyncio
+    async def test_provenance_and_sources_preserved(self, monkeypatch):
+        """6. Provenance and external sources are preserved in output."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "all_outputs": {
+                "researcher": {
+                    "findings": ["HIPAA Security Rule 45 CFR § 164.312 specifies technical safeguards."],
+                    "sources": [{"title": "HHS HIPAA Guidance", "url": "https://www.hhs.gov/hipaa"}],
+                }
+            }
+        }
+        result = await agent.run("HIPAA compliance architecture", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert "HHS HIPAA Guidance" in result.final_answer or "Sources & Provenance" in result.final_answer
+
+    @pytest.mark.asyncio
+    async def test_partial_agent_failure_disclosed_safely(self, monkeypatch):
+        """7 & 8. Partial agent failure is safely recorded in limitations."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        context = {
+            "all_outputs": {
+                "engineer": {"status": "failed", "error": "Schema validation failed"},
+                "security": {"security_summary": "Baseline security valid", "status": "completed"},
+            }
+        }
+        result = await agent.run("Design secure system", context=context)
+        assert result.status == AgentStatus.COMPLETED
+        assert any("Engineer" in lim for lim in result.limitations)
+        assert "Limitations & Evidence Gaps" in result.final_answer
+
+    @pytest.mark.asyncio
+    async def test_simple_query_remains_concise(self, monkeypatch):
+        """9. Simple queries produce direct, concise answers without heavy bureaucracy."""
+        monkeypatch.setenv("CHAI_MOCK_MODE", "true")
+        agent = SynthesizerAgent()
+        result = await agent.run("What is a Python list?")
+        assert result.status == AgentStatus.COMPLETED
+        assert "built-in" in result.final_answer.lower()
+        # Concise answer should NOT have a 10-heading architectural breakdown
+        assert "## Technical Architecture & System Design" not in result.final_answer
+        assert len(result.final_answer.splitlines()) < 5
+

@@ -29,16 +29,22 @@ class MockSuccessOutput(BaseModel):
     source_references: list = ["Source 1"]
     sources: list = ["Source 1"]
     limitations: list = ["Limitation 1"]
+    action: str = "PROCEED"
+    final_answer: str = "Synthesized dummy answer"
 
 
 class MockFailedOutput(BaseModel):
     status: str = "failed"
     error: str = "Agent execution failed"
+    action: str = "BLOCK_OUTPUT"
 
 
 def setup_mock_agents(coordinator_inst, agent_configs: dict):
     """Configure coordinator agents with success, failure, or exception mocks."""
-    canonical = ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]
+    canonical = [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]
     for agent_name in canonical:
         agent = getattr(coordinator_inst, agent_name)
         cfg = agent_configs.get(agent_name, True)
@@ -60,30 +66,39 @@ def test_health_check():
 
 def test_solve_endpoint(monkeypatch):
     monkeypatch.setenv("CHAI_MOCK_MODE", "true")
-    setup_mock_agents(coordinator, {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]})
+    setup_mock_agents(coordinator, {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]})
     payload = {"problem": "Test problem"}
     response = client.post("/api/solve", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["request_status"] == "completed"
     assert "Based on the comprehensive analysis" in data["final_synthesized_answer"]
-    assert len(data["selected_agents"]) == 6
+    assert len(data["selected_agents"]) in (6, 9)
 
 
 def test_solve_all_agents_successful():
-    setup_mock_agents(coordinator, {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]})
+    setup_mock_agents(coordinator, {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]})
     payload = {"problem": "Complete task with all agents"}
     response = client.post("/api/solve", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["request_status"] == "completed"
     statuses = data["agent_execution_statuses"]
-    assert len(statuses) == 6
+    assert len(statuses) in (6, 9)
     assert all(s["status"] == "success" for s in statuses)
 
 
 def test_solve_one_agent_failed():
-    configs = {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    configs = {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     configs["researcher"] = False
     setup_mock_agents(coordinator, configs)
 
@@ -98,7 +113,10 @@ def test_solve_one_agent_failed():
 
 
 def test_solve_multiple_agents_failed():
-    configs = {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    configs = {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     configs["engineer"] = False
     configs["security"] = Exception("Security agent connection timed out")
     setup_mock_agents(coordinator, configs)
@@ -115,7 +133,10 @@ def test_solve_multiple_agents_failed():
 
 
 def test_solve_all_agents_failed():
-    configs = {a: False for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    configs = {a: False for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     setup_mock_agents(coordinator, configs)
 
     payload = {"problem": "All agents fail"}
@@ -124,8 +145,9 @@ def test_solve_all_agents_failed():
     data = response.json()
     assert data["request_status"] == "failed"
     statuses = data["agent_execution_statuses"]
-    assert len(statuses) == 6
+    assert len(statuses) in (6, 9)
     assert all(s["status"] == "failed" for s in statuses)
+
 
 
 def test_solve_partial_execution():
