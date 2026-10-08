@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    
+    "paths": {
+      "@/*": ["./src/*"],
+      "next/link": ["./src/lib/next-link.tsx"],
+      "next/navigation": ["./src/lib/next-navigation.ts"],
+      "cn": ["./src/lib/utils.ts"]
+    }
+  },
+  "include": ["src"]
+}

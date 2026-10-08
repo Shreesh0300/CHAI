@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import get_settings
 from backend.api.health import router as health_router
 from backend.api.routes import router as api_router
+from backend.api.auth_routes import router as auth_router
+from backend.api.history_routes import router as history_router
 
 def create_app() -> FastAPI:
     settings = get_settings()
@@ -10,7 +12,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_url],
+        allow_origins=["*", settings.frontend_url],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -18,6 +20,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix="/api")
     app.include_router(api_router, prefix="/api")
+    app.include_router(auth_router, prefix="/api/auth")
+    app.include_router(history_router, prefix="/api/history")
     
     return app
 
