@@ -76,14 +76,24 @@ class GeminiClient:
 
     def get_chat_model(self, model_name: Optional[str] = None, temperature: float = 0.2):
         """Returns a LangChain ChatGoogleGenerativeAI instance using the configured key."""
+        key = self.api_key or get_gemini_api_key()
         return get_gemini_chat_model(
             model_name=model_name or self.model_name,
             temperature=temperature,
-            api_key=self.api_key,
+            api_key=key,
         )
 
     async def generate_content(self, prompt: str, system_instruction: str = None) -> str:
         """Asynchronous content generation compatible with earlier agents."""
+        if not self.api_key:
+            self.api_key = get_gemini_api_key()
+            if self.api_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=self.api_key)
+                except Exception as e:
+                    logger.warning(f"Failed to configure google.generativeai: {e}")
+
         if not self.api_key:
             return "Mock response: API key not configured."
 
