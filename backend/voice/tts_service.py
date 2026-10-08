@@ -3,6 +3,7 @@ Text-to-Speech (TTS) service implementation using Google Gemini GenAI SDK.
 """
 
 import os
+import time
 import logging
 from pathlib import Path
 from typing import Optional, Union, Any
@@ -20,8 +21,6 @@ logging.getLogger("google_genai").setLevel(logging.ERROR)
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 FALLBACK_TTS_MODELS = [
     "gemini-3.8-flash-lite-tts",
-    "models/gemini-3.8-flash-tts",
-    "models/gemini-3.8-flash-lite-tts",
 ]
 
 LANGUAGE_INSTRUCTIONS = {
@@ -41,6 +40,7 @@ class TTSService:
             or getattr(self.settings, "gemini_tts_model", "")
             or DEFAULT_TTS_MODEL
         ).strip() or DEFAULT_TTS_MODEL
+        self._gemini_quota_exhausted: bool = False
 
     def _resolve_api_key(self) -> str:
         """Safely resolve API key from voice settings, environment, or backend config."""
@@ -115,6 +115,24 @@ class TTSService:
         text_str = str(text).strip()
         canon_lang = canonicalize_language(language) or DEFAULT_LANGUAGE
 
+        provider = (
+            os.getenv("TTS_PROVIDER")
+            or getattr(self.settings, "tts_provider", "")
+            or "auto"
+        ).strip().lower()
+
+        # If user explicitly configured Google TTS, synthesize directly
+        if provider == "google":
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
+
+        # Fast-path: if this service instance already observed quota exhaustion, route to fallback
+        if self._gemini_quota_exhausted and provider != "gemini":
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
+
         api_key = self._resolve_api_key()
         if not api_key:
             raise ValueError("TTS API key is not configured (set GEMINI_API_KEY or TTS_API_KEY).")
@@ -143,10 +161,14 @@ class TTSService:
             except Exception as err:
                 last_error = err
                 err_str = str(err)
-                logger.warning(
-                    f"TTS model '{model_name}' encountered error ({err_str[:80]}). "
-                    f"Trying next fallback model."
-                )
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.info("Gemini TTS daily quota reached. Seamlessly routing to multilingual voice engine.")
+                    self._gemini_quota_exhausted = True
+                    fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+                    if fallback_wav:
+                        return fallback_wav
+                    break
+                logger.debug(f"TTS model '{model_name}' encountered error ({err_str[:60]}). Trying next.")
                 continue
 
         if response is None:
