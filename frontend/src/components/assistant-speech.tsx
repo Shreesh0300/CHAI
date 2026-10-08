@@ -116,6 +116,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
   const recognitionRef = useRef<any>(null)
   const isListeningRef = useRef(true)
   const startRecognitionRef = useRef<(() => void) | null>(null)
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null)
 
   // Transcript History
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([
@@ -149,6 +150,13 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
   // Audio Cleanup
   const stopAudioCapture = useCallback(() => {
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause()
+      activeAudioRef.current = null
+    }
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel()
+    }
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current)
       animationFrameRef.current = null
@@ -203,10 +211,10 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     }
   }, [])
 
-  // TTS Output
-  const speakText = useCallback(
+  // Browser SpeechSynthesis Fallback
+  const fallbackBrowserSpeech = useCallback(
     (textToSpeak: string) => {
-      if (isAudioMuted || typeof window === "undefined" || !window.speechSynthesis) {
+      if (typeof window === "undefined" || !window.speechSynthesis) {
         setVoiceState("listening")
         return
       }
@@ -256,7 +264,72 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
       window.speechSynthesis.speak(utterance)
     },
-    [isAudioMuted],
+    [],
+  )
+
+  // TTS Output: calls backend TTS stream with resilient browser speech fallback
+  const speakText = useCallback(
+    async (textToSpeak: string) => {
+      const cleanText = textToSpeak.trim()
+      if (isAudioMuted || !cleanText) {
+        setVoiceState("listening")
+        return
+      }
+
+      if (activeAudioRef.current) {
+        activeAudioRef.current.pause()
+        activeAudioRef.current = null
+      }
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel()
+      }
+
+      // 1. Attempt backend TTS stream
+      try {
+        const res = await fetch("http://localhost:8000/api/voice/tts/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: cleanText, language: "en", voice: "default" }),
+        })
+
+        if (res.ok) {
+          const blob = await res.blob()
+          if (blob && blob.size > 200) {
+            const audioUrl = URL.createObjectURL(blob)
+            const audio = new Audio(audioUrl)
+            activeAudioRef.current = audio
+
+            setVoiceState("speaking")
+            setSubtitle(cleanText)
+
+            audio.onended = () => {
+              setVoiceState("listening")
+              setSubtitle("Ready for your next command...")
+              URL.revokeObjectURL(audioUrl)
+              activeAudioRef.current = null
+              if (isListeningRef.current) {
+                startRecognitionRef.current?.()
+              }
+            }
+
+            audio.onerror = () => {
+              URL.revokeObjectURL(audioUrl)
+              activeAudioRef.current = null
+              fallbackBrowserSpeech(cleanText)
+            }
+
+            await audio.play()
+            return
+          }
+        }
+      } catch (err) {
+        console.debug("Backend TTS stream unreachable, using browser speech fallback:", err)
+      }
+
+      // 2. Fallback to browser SpeechSynthesis
+      fallbackBrowserSpeech(cleanText)
+    },
+    [isAudioMuted, fallbackBrowserSpeech],
   )
 
   // Handle Query Submission (Voice or Text)
