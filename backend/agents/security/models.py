@@ -36,7 +36,7 @@ class SecurityResult(BaseModel):
     @field_validator("agent", mode="before")
     @classmethod
     def normalize_agent(cls, v: Any) -> Any:
-        if isinstance(v, str) and v.lower().strip() in ("security", "security agent"):
+        if isinstance(v, str) and "security" in v.lower():
             return "security"
         return v
 

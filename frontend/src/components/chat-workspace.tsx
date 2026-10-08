@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { WorkResults } from "@/components/workspace-panel"
+import { playAssistantAudio, stopAssistantAudio } from "@/lib/assistant-audio"
 import { cn } from "@/lib/utils"
 
 type MobilePane = "response" | "chat"
@@ -193,13 +194,13 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     setMobilePane("response")
   }
 
-  function submitPrompt(
+  async function submitPrompt(
     rawPrompt: string,
     meta: PromptInputMeta,
     options: SubmitOptions = {},
-  ) {
+  ): Promise<string> {
     const prompt = rawPrompt.trim() || formatAttachmentPrompt(meta.attachments)
-    if (!prompt || isResponding) return
+    if (!prompt || isResponding) return ""
 
     const selectedMode = options.mode ?? mode
     const fromChatPanel = options.fromChatPanel ?? false
@@ -232,35 +233,48 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     }
 
     setIsResponding(true)
-    fetch("http://localhost:8000/api/solve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ problem: prompt }),
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error("API error")
-        const data = await res.json()
-        const content = data.final_answer || data.final_synthesized_answer || createAssistantReply(prompt, nextLayout, isFollowUp)
-        const assistantMessage: ChatMessage = {
-          id: createId(),
-          role: "assistant",
-          content,
-        }
-        setMessages((current) => [...current, assistantMessage])
-        setIsResponding(false)
+
+    try {
+      const payload: Record<string, any> = { problem: prompt }
+      if (selectedMode && selectedMode !== "ask") {
+        payload.mode = selectedMode
+      }
+      const res = await fetch("http://localhost:8000/api/solve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       })
-      .catch(() => {
-        responseTimer.current = window.setTimeout(() => {
-          const assistantMessage: ChatMessage = {
-            id: createId(),
-            role: "assistant",
-            content: createAssistantReply(prompt, nextLayout, isFollowUp),
-          }
-          setMessages((current) => [...current, assistantMessage])
-          setIsResponding(false)
-          responseTimer.current = null
-        }, 1000)
-      })
+      if (!res.ok) throw new Error("API error")
+      const data = await res.json()
+      const rawContent =
+        data.final_answer ||
+        data.final_synthesized_answer ||
+        createAssistantReply(prompt, nextLayout, isFollowUp)
+      const content = rawContent.replace(/\\u([0-9a-fA-F]{4})/g, (_: string, hex: string) =>
+        String.fromCharCode(parseInt(hex, 16))
+      )
+      const assistantMessage: ChatMessage = {
+        id: createId(),
+        role: "assistant",
+        content,
+      }
+      setMessages((current) => [...current, assistantMessage])
+      setIsResponding(false)
+      if (meta.isVoice && !isSpeechAssistantOpen) {
+        playAssistantAudio(content, meta.language || data.language || "en")
+      }
+      return content
+    } catch {
+      const content = createAssistantReply(prompt, nextLayout, isFollowUp)
+      const assistantMessage: ChatMessage = {
+        id: createId(),
+        role: "assistant",
+        content,
+      }
+      setMessages((current) => [...current, assistantMessage])
+      setIsResponding(false)
+      return content
+    }
   }
 
   function chooseSuggestion(suggestion: PromptSuggestion) {
@@ -454,7 +468,19 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
         {/* Futuristic AI Voice Assistant Centerpiece Modal */}
         {isSpeechAssistantOpen && (
           <div className="fixed inset-0 z-50 animate-in fade-in zoom-in-95 duration-300">
-            <AssistantSpeech onBack={() => setIsSpeechAssistantOpen(false)} />
+            <AssistantSpeech
+              onBack={() => {
+                stopAssistantAudio()
+                setIsSpeechAssistantOpen(false)
+              }}
+              onSubmitVoicePrompt={async (voicePrompt) => {
+                return await submitPrompt(
+                  voicePrompt,
+                  { attachments: [], isVoice: true },
+                  { fromChatPanel: true },
+                )
+              }}
+            />
           </div>
         )}
       </main>

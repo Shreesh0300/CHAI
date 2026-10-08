@@ -342,3 +342,167 @@ async def test_coordinator_simple_direct_llm_failure_handling():
     assert direct_trace is not None
     assert direct_trace["status"] == "failed"
     assert "LLM API Quota Exceeded" in direct_trace["error"]
+
+
+# ==============================================================================
+# SECTION 15: REGRESSION TEST MATRIX
+# ==============================================================================
+
+@pytest.mark.parametrize(
+    "query,expected_route",
+    [
+        ("What is Python?", "simple"),
+        ("What is 2 + 2?", "simple"),
+        ("What is 2 + 2", "simple"),
+        ("Which language compiles faster, C or Python?", "simple"),
+        ("Which language compiles faster, C or Python", "simple"),
+        ("Is Python faster than Java?", "simple"),
+        ("Explain binary search.", "simple"),
+        ("What is the difference between RAM and ROM?", "simple"),
+        ("Who invented the telephone?", "simple"),
+        (
+            "Compare C and Python for a production AI system considering runtime, memory, deployment, hiring, ecosystem and maintenance.",
+            "complex",
+        ),
+        (
+            "Design a secure university learning platform for 50,000 students.",
+            "complex",
+        ),
+        (
+            "My parents want me to take a government job but I want to pursue AI. What should I do?",
+            "complex",
+        ),
+        (
+            "Research the latest AI model pricing and compare providers.",
+            "complex",
+        ),
+        (
+            "Give me a detailed research-backed analysis of why students perform differently despite similar educational resources.",
+            "complex",
+        ),
+    ],
+)
+def test_section_15_router_regression_matrix(query, expected_route):
+    decision = route_request(query)
+    assert decision.route == expected_route, (
+        f"Query '{query}' was expected to be '{expected_route}', got '{decision.route}' "
+        f"(reason: {decision.reasoning})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_c_vs_python_end_to_end_simple_route():
+    """Verify 'Which language compiles faster, C or Python?' in Ask mode takes the direct path."""
+    coordinator = Coordinator()
+    req = SolveRequest(problem="Which language compiles faster, C or Python?", mode="ask")
+    resp = await coordinator.process_request(req)
+
+    assert resp.route == "simple"
+    assert resp.status == "completed"
+    assert resp.selected_agents == []
+    trace_agents = [t["agent"] for t in resp.execution_trace]
+    assert "router" in trace_agents
+    assert "direct_llm" in trace_agents
+    assert "researcher" not in trace_agents
+    assert "engineer" not in trace_agents
+    assert "security" not in trace_agents
+
+
+# ==============================================================================
+# TAXONOMY, MATHEMATICS & CONVERSATIONAL PADDING TESTS
+# ==============================================================================
+
+@pytest.mark.parametrize(
+    "query,expected_route",
+    [
+        ("What is the square root of 64?", "simple"),
+        ("broo square root of 64", "simple"),
+        ("Can you tell me the square root of 64?", "simple"),
+        ("Can you please tell me what the square root of 64 is?", "simple"),
+        ("Hey bro, I just want to know which language generally runs faster, C or Python?", "simple"),
+        ("What is the square root of 64 and explain it in one sentence?", "simple"),
+        ("Explain how computers calculate square roots.", "simple"),
+        ("What is 25% of 200?", "simple"),
+        ("What is 10 * 5?", "simple"),
+        ("Solve x + 5 = 10.", "simple"),
+        ("What is 10 factorial?", "simple"),
+        ("What is 12 factorial?", "simple"),
+        ("What is 8 squared?", "simple"),
+        ("10 km in meters", "simple"),
+        ("5 kg in grams", "simple"),
+        ("2 hours in minutes", "simple"),
+        ("What is recursion?", "simple"),
+        ("Define binary search.", "simple"),
+        ("What does CPU stand for?", "simple"),
+        ("Which is larger, GB or MB?", "simple"),
+        ("Explain stack and queue.", "simple"),
+        ("What is the capital of France?", "simple"),
+        ("What is the full form of ISRO?", "simple"),
+        (
+            "Compare Newton's method, binary search and hardware square-root instructions for numerical computing, including complexity and convergence.",
+            "complex",
+        ),
+        (
+            "Build a three-year strategy for launching an AI startup.",
+            "complex",
+        ),
+        (
+            "Compare several business options and recommend one with a 12-month plan.",
+            "complex",
+        ),
+        (
+            "Analyze competing scientific explanations and evaluate causal evidence.",
+            "complex",
+        ),
+        (
+            "Help me choose between a stable career and entrepreneurship with a decision framework and risk mitigation.",
+            "complex",
+        ),
+    ],
+)
+def test_taxonomy_math_and_conversational_routes(query, expected_route):
+    decision = route_request(query)
+    assert decision.route == expected_route, (
+        f"Query '{query}' expected '{expected_route}', got '{decision.route}' "
+        f"(reason: {decision.reasoning})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_square_root_64_end_to_end_simple_route():
+    """Verify 'broo square root of 64' routes to simple, uses direct_llm, and answers concisely."""
+    coordinator = Coordinator()
+    req = SolveRequest(problem="broo square root of 64", mode="ask")
+    resp = await coordinator.process_request(req)
+
+    assert resp.route == "simple"
+    assert resp.status == "completed"
+    assert resp.selected_agents == []
+    trace_agents = [t["agent"] for t in resp.execution_trace]
+    assert trace_agents == ["router", "direct_llm"]
+
+    # Answer must contain 8 and must NOT contain complex synthesizer headings
+    assert "8" in resp.final_answer
+    assert "Executive Summary" not in resp.final_answer
+    assert "Core Analysis" not in resp.final_answer
+    assert "Options & Trade-offs" not in resp.final_answer
+
+
+def test_unicode_symbol_normalization():
+    """Verifies that escaped Unicode sequences (e.g. \\u221a -> √, \\u00d7 -> ×, \\u00b2 -> ²) render correctly."""
+    from backend.synthesis.response_formatter import normalize_unicode_escapes, format_user_facing_response
+
+    raw_text = r"\u221a64 = 8, because 8 \u00d7 8 = 64 and 8\u00b2 = 64."
+    normalized = normalize_unicode_escapes(raw_text)
+    assert "√64 = 8" in normalized
+    assert "8 × 8 = 64" in normalized
+    assert "8² = 64" in normalized
+    assert r"\u221a" not in normalized
+
+    formatted = format_user_facing_response(
+        query="What is the square root of 64?",
+        raw_answer=raw_text,
+        route="simple",
+    )
+    assert "√64" in formatted
+    assert r"\u221a" not in formatted

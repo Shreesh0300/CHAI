@@ -243,8 +243,7 @@ class STTService:
             formatted_bytes, mime_type = _format_audio_payload(audio_data)
             configured_model = (
                 os.getenv("GEMINI_STT_MODEL")
-                or os.getenv("GEMINI_MODEL")
-                or "gemini-flash-lite-latest"
+                or "gemini-3.5-transcribe"
             ).strip()
 
             prompt = STT_PROMPT
@@ -263,16 +262,23 @@ class STTService:
                     or "RESOURCE_EXHAUSTED" in err_str
                     or "404" in err_str
                     or "NOT_FOUND" in err_str
-                ) and model_name != "gemini-flash-lite-latest":
+                ) and model_name != "gemini-3.8-flash":
                     logger.warning(
                         f"Model '{model_name}' hit rate limit or error ({err_str[:80]}). "
-                        f"Falling back to 'gemini-flash-lite-latest'."
+                        f"Falling back to 'gemini-3.8-flash'."
                     )
-                    model_name = "gemini-flash-lite-latest"
-                    response = await client.aio.models.generate_content(
-                        model=model_name,
-                        contents=[prompt, audio_part],
-                    )
+                    model_name = "gemini-3.8-flash"
+                    try:
+                        response = await client.aio.models.generate_content(
+                            model=model_name,
+                            contents=[prompt, audio_part],
+                        )
+                    except Exception:
+                        model_name = "gemini-flash-latest"
+                        response = await client.aio.models.generate_content(
+                            model=model_name,
+                            contents=[prompt, audio_part],
+                        )
                 else:
                     raise model_err
 

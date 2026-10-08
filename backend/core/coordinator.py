@@ -43,7 +43,7 @@ from backend.agents.synthesizer.agent import SynthesizerAgent
 from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent
 from backend.agents.reliability_monitor.schemas import ReliabilityAction
 from backend.validation.output_validator import OutputValidator, OutputValidationResult
-from backend.synthesis.response_formatter import format_user_facing_response
+from backend.synthesis.response_formatter import format_user_facing_response, normalize_unicode_escapes
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -153,21 +153,34 @@ class CHAICoordinator:
         # Determine Route and Selected Agents
         # -------------------------------------------------------------
         route_decision: Optional[RouteDecision] = None
+        req_mode = (getattr(request, "mode", None) or "ask").lower().strip()
+
         if request.selected_agents is not None:
+            honor_explicit_agents = True
+        else:
+            honor_explicit_agents = False
+
+        if honor_explicit_agents and request.selected_agents is not None:
             selected_agents = [a.lower().strip() for a in request.selected_agents]
             route = "simple" if not selected_agents else "complex"
             complexity = "low" if not selected_agents else "high"
         else:
+            # ASK mode (default): Router is the final authority
             route_decision = route_request(request.problem, getattr(request, "context", None))
-            route = route_decision.route
-            complexity = route_decision.complexity
+            if req_mode == "agent":
+                route = "complex"
+                complexity = "high"
+            else:
+                route = route_decision.route
+                complexity = route_decision.complexity
+
             if route == "simple":
                 selected_agents = []
             else:
-                # Domain-aware agent selection:
-                # Personal/career: researcher, strategist, guardian, evaluator, conflict_resolver, synthesizer, reliability_monitor
-                # (Do NOT automatically inject engineer or security unless required by the problem)
-                if route_decision.domain == "personal_career":
+                # Domain-aware adaptive agent selection:
+                # Personal/career decision: exclude irrelevant engineer/security agents unless technical requirements exist
+                has_tech = any(w in request.problem.lower() for w in ["tech", "software", "engineer", "code", "architecture", "platform", "system", "database", "security"])
+                if route_decision.domain == "personal_career" and not has_tech:
                     selected_agents = [
                         "researcher",
                         "strategist",
@@ -250,7 +263,7 @@ class CHAICoordinator:
                     metadata={"route": "simple"},
                 )
 
-            sanitized_direct = direct_text if isinstance(direct_text, str) else str(direct_text)
+            sanitized_direct = normalize_unicode_escapes(direct_text if isinstance(direct_text, str) else str(direct_text))
             user_facing_direct = format_user_facing_response(
                 query=request.problem,
                 raw_answer=sanitized_direct,
@@ -258,6 +271,7 @@ class CHAICoordinator:
                 domain=route_decision.domain if route_decision else "general",
                 requested_depth=route_decision.requested_depth if route_decision else "brief",
             )
+            user_facing_direct = normalize_unicode_escapes(user_facing_direct)
 
             execution_trace.append({
                 "agent": "direct_llm",

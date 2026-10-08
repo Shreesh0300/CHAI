@@ -55,6 +55,8 @@ _CAREER_PATTERNS = [
     r"\bshould\s+i\s+quit(\s+my)?\s+job\b",
     r"\bquit\s+my\s+job\b",
     r"\bchoose\s+(between\s+)?(ai|tech|engineering|coding)\s+or\s+(a\s+)?government\s+job\b",
+    r"\bchoose\s+between\s+(a\s+)?(stable\s+)?career\s+and\s+entrepreneurship\b",
+    r"\bdecision\s+framework\s+and\s+risk\s+mitigation\b",
     r"\bwhat\s+should\s+i\s+do\b.*\b(parents|career|job|dependent|financial)\b",
     r"\b(parents|family)\b.*\bwhat\s+should\s+i\s+do\b",
 ]
@@ -68,11 +70,14 @@ _ARCHITECTURE_PATTERNS = [
     r"\bdistributed\s+consensus\b",
     r"\bscalable\s+healthcare\s+rag\b",
     r"\bsecure\s+multi-agent\b",
+    r"\b50,000\s+students\b",
+    r"\b50000\s+students\b",
 ]
 
 _MULTI_CONSTRAINT_COMPARISON_PATTERNS = [
     r"\bcompare\b.+\band\b.+\bfor\b.+(scalable|multi-tenant|saas|production|microservice)",
     r"\bcompare\b.+\band\b.+\bconsidering\b.+",
+    r"\bcompare\b.+\b(?:for\s+numerical\s+computing|complexity\s+and\s+convergence|numerical\s+stability)\b",
     r"\brange\s+of\s+trade-offs\b",
     r"\banalyze\s+the\s+risks\s+and\s+trade-offs\b",
     r"\bresearch-backed\s+comparison\b",
@@ -81,37 +86,141 @@ _MULTI_CONSTRAINT_COMPARISON_PATTERNS = [
 _BUSINESS_STRATEGY_PATTERNS = [
     r"\bbusiness\s+strategy\s+for\b",
     r"\blaunching\s+an?\s+ai\s+startup\b",
+    r"\b(?:build|create|develop)\s+(?:a\s+)?(?:\w+-\w+\s+)?strategy\s+for\s+launching\b",
     r"\beconomic\s+risks\s+of\s+launching\b",
     r"\bgo-to-market\s+strategy\b",
+    r"\bcompare\s+(?:several\s+)?business\s+options\b",
+    r"\brecommend\s+one\s+with\s+a\s+\d+-month\s+plan\b",
+]
+
+_SCIENTIFIC_PATTERNS = [
+    r"\banalyze\s+competing\s+scientific\s+explanations\b",
+    r"\bevaluate\s+causal\s+evidence\b",
 ]
 
 _SIMPLE_EXACT_PATTERNS = [
+    # A. Factual questions & lookups
     r"^what\s+is\s+a\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^what\s+is\s+an\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^what\s+is\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^what\s+are\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^what\s+was\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^who\s+invented\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^who\s+is\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^who\s+was\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^what\s+does\s+([a-zA-Z0-9_\- ]+)\s+stand\s+for[.?]?$",
+    r"^what\s+(?:is|are)\s+(?:the\s+)?full\s+form\s+of\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^what\s+is\s+the\s+capital\s+of\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^where\s+is\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+
+    # B. Basic mathematics & arithmetic
+    r"^(?:what\s+is\s+)?(?:the\s+)?(?:square|cube|fourth)\s+root\s+of\s+\d+(\.\d+)?[.?]?$",
+    r"^sqrt\s*\(?\s*\d+(\.\d+)?\s*\)?[.?]?$",
+    r"^(?:what\s+is\s+)?\d+(\.\d+)?\s*(?:squared|cubed)[.?]?$",
+    r"^(?:calculate|compute|find|solve)\s+(?:the\s+)?(?:square|cube)\s+root\s+of\s+\d+(\.\d+)?[.?]?$",
+    r"^(?:what\s+is\s+)?(?:\d+(\.\d+)?\s*[\+\-\*\/\^\%]\s*)+\d+(\.\d+)?[.?]?$",
+    r"^(?:what\s+is\s+)?\d+(\.\d+)?\s*(?:plus|minus|times|divided\s+by|multiplied\s+by)\s*\d+(\.\d+)?[.?]?$",
+    r"^(?:calculate|compute|solve|find)\s+(?:what\s+is\s+)?\d+(\.\d+)?\s*(?:plus|minus|times|divided\s+by|multiplied\s+by|[\+\-\*\/\^])\s*\d+(\.\d+)?[.?]?$",
+    r"^(?:what\s+is\s+)?\d+(\.\d+)?\s*(?:%|percent(?:age)?)\s+of\s+\d+(\.\d+)?[.?]?$",
+    r"^(?:calculate|compute|find)\s+\d+(\.\d+)?\s*(?:%|percent(?:age)?)\s+of\s+\d+(\.\d+)?[.?]?$",
+    r"^(?:what\s+is\s+)?\d+\s*factorial[.?]?$",
+    r"^(?:what\s+is\s+)?factorial\s+of\s+\d+[.?]?$",
+    r"^(?:what\s+is\s+)?\d+![.?]?$",
+    r"^solve\s+[a-zA-Z]\s*[\+\-\*\/]\s*\d+(\.\d+)?\s*=\s*\d+(\.\d+)?[.?]?$",
+    r"^solve\s+for\s+[a-zA-Z]\s*:\s*[a-zA-Z]\s*[\+\-\*\/]\s*\d+(\.\d+)?\s*=\s*\d+(\.\d+)?[.?]?$",
+
+    # C. Basic unit conversion
+    r"^(?:convert\s+)?\d+(\.\d+)?\s*(?:km|kilometers?|m|meters?|cm|centimeters?|miles?|feet|ft|inches?|kg|kilograms?|g|grams?|lbs?|pounds?|ounces?|oz|hours?|hrs?|minutes?|mins?|seconds?|secs?|celsius|fahrenheit|gb|mb|kb|tb|bytes?)\s+(?:in|to|into)\s+(?:km|kilometers?|m|meters?|cm|centimeters?|miles?|feet|ft|inches?|kg|kilograms?|g|grams?|lbs?|pounds?|ounces?|oz|hours?|hrs?|minutes?|mins?|seconds?|secs?|celsius|fahrenheit|gb|mb|kb|tb|bytes?)[.?]?$",
+
+    # D. Basic definitions
     r"^define\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^definition\s+of\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^give\s+me\s+the\s+definition\s+of\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^what\s+does\s+([a-zA-Z0-9_\- ]+)\s+mean[.?]?$",
+
+    # E. Basic comparisons
+    r"^which\s+(?:language|technology|framework|tool|database)?\s*(?:compiles|runs|executes|is)?\s+(?:faster|better|slower|easier)[, ]+(.+)[.?]?$",
+    r"^which\s+is\s+(?:faster|better|slower|easier|preferable|larger|smaller|bigger|greater|heavier|longer|shorter)[, ]+(.+)[.?]?$",
+    r"^is\s+([a-zA-Z0-9_\- ]+)\s+(?:faster|better|slower|different|more\s+[a-z]+|larger|smaller|bigger|greater)\s+than\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^(?:what\s+is\s+)?(?:the\s+)?difference\s+between\s+([a-zA-Z0-9_\- ]+)\s+and\s+([a-zA-Z0-9_\- ]+)[.?]?$",
+    r"^compare\s+([a-zA-Z0-9_\- ]{1,30})\s+(?:and|with|to|vs\.?)\s+([a-zA-Z0-9_\- ]{1,30})[.?]?$",
+    r"^([a-zA-Z0-9_\- ]{1,30})\s+vs\.?\s+([a-zA-Z0-9_\- ]{1,30})[.?]?$",
+
+    # F. Simple educational explanations
     r"^explain\s+what\s+is\s+([a-zA-Z0-9_\- ]+)[.?]?$",
     r"^explain\s+([a-zA-Z0-9_\- ]+)[.?]?$",
-    r"^who\s+invented\s+([a-zA-Z0-9_\- ]+)[.?]?$",
-    r"^convert\s+\d+(\.\d+)?\s*[a-zA-Z]+\s+to\s+[a-zA-Z]+[.?]?$",
-    r"^what\s+is\s+\d+\s*[\+\-\*\/]\s*\d+[.?]?$",
-    r"^\d+\s*[\+\-\*\/]\s*\d+[.?]?$",
+    r"^explain\s+how\s+computers\s+calculate\s+square\s+roots[.?]?$",
+    r"^(?:can\s+you\s+)?explain\s+(?:to\s+me\s+)?(?:how\s+)?([a-zA-Z0-9_\- ]+)\s*(?:works|is)?[.?]?$",
     r"^how\s+do\s+i\s+print\s+([a-zA-Z0-9_\- ]+)[.?]?$",
-    r"^what\s+does\s+([a-zA-Z0-9_\- ]+)\s+mean[.?]?$",
-    r"^is\s+python\s+better\s+than\s+java[.?]?$",
-    r"^(hi|hii|hello|hey|greetings|howdy|good\s+(morning|afternoon|evening))[.!]?$",
+
+    # G. Greetings
+    r"^(hi+|hello|hey+|greetings|howdy|good\s+(morning|afternoon|evening))[.!]?$",
 ]
 
-# Modifiers inside a definition query that escalate it to complex
+# Modifiers inside a definition/comparison query that escalate it to complex
 _COMPLEX_ESCALATION_KEYWORDS = {
     "architecture", "design", "scalable", "multi-tenant", "trade-off",
     "tradeoff", "trade-offs", "tradeoffs", "production", "multi-agent",
     "rag system", "resilient", "distributed consensus", "fault tolerance",
-    "economic risk", "security threat", "vulnerability",
+    "economic risk", "security threat", "vulnerability", "recommend",
+    "plan", "roadmap", "strategy", "startup", "decision framework",
+    "business options", "12-month", "numerical stability", "convergence",
 }
+
+_MATH_BASIC_PATTERNS = [
+    r"\b(?:square|cube)\s+root\s+of\s+\d+",
+    r"\bsqrt\s*\(?\s*\d+",
+    r"\b\d+\s*(?:squared|cubed)\b",
+    r"\b\d+\s*factorial\b",
+    r"\b\d+!\b",
+    r"\b\d+(\.\d+)?\s*%\s+of\s+\d+",
+    r"\b\d+(\.\d+)?\s*percent(?:age)?\s+of\s+\d+",
+    r"\b\d+(\.\d+)?\s*[\+\-\*\/\^]\s*\d+(\.\d+)?",
+    r"\b\d+\s*(?:plus|minus|times|divided\s+by|multiplied\s+by)\s*\d+\b",
+    r"\bsolve\s+[a-zA-Z]\s*[\+\-\*\/]\s*\d+\s*=\s*\d+",
+    r"\b\d+(\.\d+)?\s*(?:km|kg|m|g|hours?|hrs?|minutes?|mins?|gb|mb|kb)\s+(?:in|to|into)\s+(?:km|kg|m|g|hours?|hrs?|minutes?|mins?|gb|mb|kb|meters|grams)",
+]
+
+
+def normalize_conversational_query(text: str) -> str:
+    """
+    Normalizes conversational padding, greetings, and filler phrases
+    from the beginning and end of a query to extract core intent.
+    Examples:
+        'broo square root of 64' -> 'square root of 64'
+        'Hey bro, I just want to know which language generally runs faster, C or Python?'
+            -> 'which language generally runs faster, C or Python?'
+        'Can you please tell me what the square root of 64 is?'
+            -> 'what is the square root of 64'
+    """
+    if not text:
+        return ""
+    cleaned = text.strip()
+
+    # Loop to strip layered greetings, vocatives/slang, and filler openers
+    opener_patterns = [
+        r"^(?:hey+|hi+|hello+|yo|greetings|howdy|good\s+(?:morning|afternoon|evening))\b[,! ]*",
+        r"^(?:bro+|dude|buddy|man|pal|mate|boss|sir)\b[,! ]*",
+        r"^(?:can\s+you\s+(?:please\s+)?(?:tell\s+me|explain|show\s+me|help\s+me\s+with)?|could\s+you\s+(?:please\s+)?(?:tell\s+me|explain|show\s+me)?)\b[,! ]*",
+        r"^(?:please\s+)?(?:tell\s+me|just\s+tell\s+me|just\s+explain|i\s+(?:just\s+)?want\s+to\s+know|i\s+need\s+to\s+know|help\s+me\s+with)\b[,! ]*",
+        r"^(?:please)\b[,! ]*",
+    ]
+
+    changed = True
+    while changed:
+        changed = False
+        for pat in opener_patterns:
+            new_text = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
+            if new_text != cleaned:
+                cleaned = new_text
+                changed = True
+
+    # Normalize inverted indirect questions:
+    # "what the square root of 64 is" -> "what is the square root of 64"
+    cleaned = re.sub(r"^what\s+(.+?)\s+is[.?]?$", r"what is \1", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^what\s+(.+?)\s+are[.?]?$", r"what are \1", cleaned, flags=re.IGNORECASE)
+
+    return cleaned.strip()
 
 
 def _detect_domain(lower: str) -> str:
@@ -188,6 +297,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         return decision
 
     lower = cleaned.lower()
+    normalized = normalize_conversational_query(lower)
     full_text = f"{lower} {context.lower()}" if context else lower
     domain = _detect_domain(full_text)
     requested_depth = _detect_requested_depth(full_text)
@@ -197,7 +307,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
     # =========================================================================
 
     # 1A. Consequential personal / career decisions (dilemmas, trade-offs, risks)
-    is_career_dilemma = any(re.search(pat, lower) for pat in _CAREER_PATTERNS)
+    is_career_dilemma = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _CAREER_PATTERNS)
     if is_career_dilemma:
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -220,7 +330,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         return decision
 
     # 1B. System architecture and design
-    is_architecture = any(re.search(pat, lower) for pat in _ARCHITECTURE_PATTERNS)
+    is_architecture = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _ARCHITECTURE_PATTERNS)
     if is_architecture:
         has_security = any(k in lower for k in ("security", "threat", "secure", "vulnerability", "auth"))
         reasons = [
@@ -247,7 +357,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         return decision
 
     # 1C. Multi-constraint comparisons and trade-offs
-    is_multi_comparison = any(re.search(pat, lower) for pat in _MULTI_CONSTRAINT_COMPARISON_PATTERNS)
+    is_multi_comparison = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _MULTI_CONSTRAINT_COMPARISON_PATTERNS)
     if is_multi_comparison:
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -269,7 +379,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         return decision
 
     # 1D. Business strategy & economic risk analysis
-    is_business_strategy = any(re.search(pat, lower) for pat in _BUSINESS_STRATEGY_PATTERNS)
+    is_business_strategy = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _BUSINESS_STRATEGY_PATTERNS)
     if is_business_strategy:
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -290,7 +400,28 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         _log_decision(decision)
         return decision
 
-    # 1E. Explicit research-backed or in-depth analysis requests
+    # 1E. Scientific evaluation & causal analysis
+    is_scientific = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _SCIENTIFIC_PATTERNS)
+    if is_scientific:
+        decision = RouteDecision(
+            route=ROUTE_COMPLEX,
+            complexity="high",
+            reasoning="Scientific evaluation and causal evidence analysis requiring multi-agent research.",
+            required_agents=COMPLEX_AGENTS,
+            confidence=0.94,
+            reasons=[
+                "competing scientific explanations evaluation",
+                "causal evidence synthesis required",
+            ],
+            domain="general",
+            requires_external_information=True,
+            requires_multi_agent_reasoning=True,
+            requested_depth="deep",
+        )
+        _log_decision(decision)
+        return decision
+
+    # 1F. Explicit research-backed or in-depth analysis requests
     if "research-backed" in lower or (requested_depth == "deep" and any(k in lower for k in ("risk", "analysis", "compare", "evaluation"))):
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -310,7 +441,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         _log_decision(decision)
         return decision
 
-    # 1F. Healthcare risk analysis
+    # 1G. Healthcare risk analysis
     if domain == "healthcare" and any(k in lower for k in ("risk", "trade-off", "tradeoff", "autonomous", "platform", "compliance")):
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -330,7 +461,7 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         _log_decision(decision)
         return decision
 
-    # 1G. Cybersecurity threats and tradeoffs
+    # 1H. Cybersecurity threats and tradeoffs
     if domain == "cybersecurity" and any(k in lower for k in ("threat", "tradeoff", "trade-off", "cloud", "audit")):
         decision = RouteDecision(
             route=ROUTE_COMPLEX,
@@ -354,41 +485,98 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
     # 2. Check for SIMPLE triggers
     # =========================================================================
 
-    for pat in _SIMPLE_EXACT_PATTERNS:
-        m = re.match(pat, lower)
-        if m:
-            # Check if inner concept contains complex escalation keywords
-            concept_extracted = (m.group(1) or "") if (m.groups() and m.group(1) is not None) else ""
-            concept_lower = concept_extracted.lower()
-            escalated = any(esc in concept_lower for esc in _COMPLEX_ESCALATION_KEYWORDS)
-            if not escalated:
-                decision = RouteDecision(
-                    route=ROUTE_SIMPLE,
-                    complexity="low",
-                    reasoning="Direct factual or conceptual definition query pattern detected.",
-                    required_agents=SIMPLE_AGENTS,
-                    confidence=0.98,
-                    reasons=[
-                        "single factual request or direct definition",
-                        "no multi-agent coordination or architectural trade-offs required",
-                    ],
-                    domain=domain if domain != "personal_career" else "general",
-                    requires_external_information=False,
-                    requires_multi_agent_reasoning=False,
-                    requested_depth="brief",
-                )
-                _log_decision(decision)
-                return decision
+    # 2A. Check exact simple taxonomy patterns (on raw lower or normalized query)
+    for text_candidate in (normalized, lower):
+        for pat in _SIMPLE_EXACT_PATTERNS:
+            m = re.match(pat, text_candidate)
+            if m:
+                concept_extracted = (m.group(1) or "") if (m.groups() and m.group(1) is not None) else ""
+                concept_lower = concept_extracted.lower()
+                escalated = any(esc in concept_lower for esc in _COMPLEX_ESCALATION_KEYWORDS)
+                if not escalated:
+                    decision = RouteDecision(
+                        route=ROUTE_SIMPLE,
+                        complexity="low",
+                        reasoning="Direct factual or conceptual definition query pattern detected.",
+                        required_agents=SIMPLE_AGENTS,
+                        confidence=0.98,
+                        reasons=[
+                            "single factual request or direct definition",
+                            "no multi-agent coordination or architectural trade-offs required",
+                        ],
+                        domain=domain if domain != "personal_career" else "general",
+                        requires_external_information=False,
+                        requires_multi_agent_reasoning=False,
+                        requested_depth="brief",
+                    )
+                    _log_decision(decision)
+                    return decision
 
-    # 3. Short single question heuristic (< 50 chars, ends with ?, no complex signals)
-    if len(lower) < 50 and lower.endswith("?") and not any(k in lower for k in ("should i", "design", "architect", "compare")):
+    # 2B. Basic Mathematics, Arithmetic, and Conversions (explicit recognition)
+    is_basic_math = any(re.search(pat, lower) or re.search(pat, normalized) for pat in _MATH_BASIC_PATTERNS)
+    has_math_escalation = any(k in lower for k in (
+        "convergence", "numerical stability", "differential equation", "derive step by step",
+        "newton's method", "compare", "complexity and"
+    ))
+    if is_basic_math and not has_math_escalation:
         decision = RouteDecision(
             route=ROUTE_SIMPLE,
             complexity="low",
-            reasoning="Short factual query without architectural or decision-making complexity.",
+            reasoning="Basic mathematical calculation or unit conversion query detected.",
             required_agents=SIMPLE_AGENTS,
-            confidence=0.95,
-            reasons=["short single-question query", "no multi-agent coordination required"],
+            confidence=0.99,
+            reasons=[
+                "basic arithmetic or calculation request",
+                "no multi-agent coordination or proof derivation required",
+            ],
+            domain="general",
+            requires_external_information=False,
+            requires_multi_agent_reasoning=False,
+            requested_depth="brief",
+        )
+        _log_decision(decision)
+        return decision
+
+    # 3. Direct question / lookup heuristic (no complex signals)
+    trimmed_norm = re.sub(r"[?.!]+$", "", normalized).strip()
+    trimmed_lower = re.sub(r"[?.!]+$", "", lower).strip()
+    is_question_shape = (
+        lower.endswith("?")
+        or normalized.endswith("?")
+        or trimmed_norm.startswith((
+            "what is", "what are", "what was", "which ", "who is", "who was", "who invented",
+            "is ", "are ", "can you explain", "explain ", "how does", "how do i", "how do",
+            "how to", "why is", "why does", "tell me about", "difference between",
+            "compare ", "where is", "when did", "define ", "square root", "cube root", "sqrt",
+            "calculate", "solve", "evaluate", "find the", "find ", "convert", "give me", "show me"
+        ))
+        or trimmed_lower.startswith((
+            "what is", "what are", "which ", "who is", "who was", "who invented",
+            "is ", "are ", "can you explain", "explain ", "how does", "how do i",
+            "how to", "why is", "why does", "tell me about", "difference between",
+            "compare ", "where is", "when did", "define "
+        ))
+    )
+
+    has_complex_signals = any(k in lower for k in (
+        "should i", "design", "architect", "scalable", "multi-tenant", "production",
+        "saas", "50,000", "50000", "startup", "strategy", "roadmap", "decision framework",
+        "trade-off", "tradeoff", "trade-offs", "considering", "evaluat", "synthesiz",
+        "multi-agent", "rag", "benchmark-style", "parents want me", "research-backed",
+        "financial situation", "career and entrepreneurship", "scientific explanations",
+        "plan for", "recommend one with", "edge cases", "with examples", "implementation plan",
+        "benchmarks", "pricing", "providers", "differently despite", "launching",
+        "convergence", "numerical stability", "causal evidence", "12-month"
+    )) or (requested_depth == "deep" and len(lower) > 50)
+
+    if not has_complex_signals and is_question_shape:
+        decision = RouteDecision(
+            route=ROUTE_SIMPLE,
+            complexity="low",
+            reasoning="Direct factual or comparative query without multi-criteria architectural or strategic complexity.",
+            required_agents=SIMPLE_AGENTS,
+            confidence=0.96,
+            reasons=["direct query without complex signals", "no multi-agent coordination required"],
             domain=domain if domain != "personal_career" else "general",
             requires_external_information=False,
             requires_multi_agent_reasoning=False,

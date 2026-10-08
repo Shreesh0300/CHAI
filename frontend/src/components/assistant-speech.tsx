@@ -25,14 +25,21 @@ import {
   ChevronDown,
   Sun,
   Moon,
+  Square,
 } from "lucide-react"
 import { AssistantOrb, type AssistantVoiceState } from "@/components/assistant-orb"
 import { ScreenEdgeIllumination } from "@/components/screen-edge-illumination"
+import {
+  playAssistantAudio,
+  stopAssistantAudio,
+  isAssistantAudioPlaying,
+} from "@/lib/assistant-audio"
 import { cn } from "@/lib/utils"
 
 export interface AssistantSpeechProps {
   onBack?: () => void
   initialPrompt?: string
+  onSubmitVoicePrompt?: (prompt: string) => Promise<string | void> | void
 }
 
 type ActiveSection = "none" | "chat" | "tasks" | "agents" | "memory"
@@ -74,7 +81,7 @@ interface CommandResult {
   keyPoints?: string[]
 }
 
-export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps) {
+export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: AssistantSpeechProps) {
   // Theme state: defaults to dark for all, switches to light only if user explicitly selects it
   const [isDark, setIsDark] = useState(() => {
     if (typeof window === "undefined") return true
@@ -107,16 +114,31 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
   const [commandResults, setCommandResults] = useState<CommandResult[]>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  // Real Web Audio API state
+  // Real Web Audio API & MediaRecorder state
   const [audioLevel, setAudioLevel] = useState(0)
   const [audioAnalyser, setAudioAnalyser] = useState<AnalyserNode | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
   const animationFrameRef = useRef<number | null>(null)
-  const recognitionRef = useRef<any>(null)
   const isListeningRef = useRef(true)
-  const startRecognitionRef = useRef<(() => void) | null>(null)
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null)
+  const isRecordingRef = useRef(false)
+  const hasSpeechRef = useRef(false)
+  const silenceStartRef = useRef<number | null>(null)
+  const recordingStartRef = useRef(0)
+
+  // Silence & Audio Constants (1.5s silence duration for snappy conversational response)
+  const SILENCE_DURATION_MS = 1500
+  const SPEECH_RMS_THRESHOLD = 0.022
+  const SILENCE_RMS_THRESHOLD = 0.014
+  const MIN_RECORDING_MS = 500
+  const MAX_RECORDING_MS = 25000
+
+  // Function reference forwarders to eliminate stale closures
+  const startAudioRecordingRef = useRef<() => Promise<void>>(async () => {})
+  const handleProcessQueryRef = useRef<(query: string) => Promise<void>>(async () => {})
+  const speakTextRef = useRef<(text: string, lang?: string) => Promise<void>>(async () => {})
 
   // Transcript History
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([
@@ -148,18 +170,18 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     { key: "Engine Protocol", value: "WebSocket / Supabase Edge Synced", category: "context" },
   ])
 
-  // Audio Cleanup
+  // Stop All Audio Capture & Processing
   const stopAudioCapture = useCallback(() => {
-    if (activeAudioRef.current) {
-      activeAudioRef.current.pause()
-      activeAudioRef.current = null
-    }
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel()
-    }
+    isRecordingRef.current = false
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current)
       animationFrameRef.current = null
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop()
+      } catch {}
+      mediaRecorderRef.current = null
     }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop())
@@ -173,164 +195,53 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     setAudioLevel(0)
   }, [])
 
-  // Start Audio Capture
-  const startAudioCapture = useCallback(async () => {
-    try {
-      if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) return
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
-      const audioCtx = new AudioContextClass()
-      audioContextRef.current = audioCtx
-
-      const source = audioCtx.createMediaStreamSource(stream)
-      const analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 128
-      analyser.smoothingTimeConstant = 0.8
-      source.connect(analyser)
-
-      setAudioAnalyser(analyser)
-
-      const pcmData = new Uint8Array(analyser.frequencyBinCount)
-
-      const checkVolume = () => {
-        analyser.getByteFrequencyData(pcmData)
-        let sum = 0
-        for (let i = 0; i < pcmData.length; i++) {
-          sum += pcmData[i]
-        }
-        const avg = sum / pcmData.length / 255
-        setAudioLevel(avg)
-        animationFrameRef.current = requestAnimationFrame(checkVolume)
-      }
-      checkVolume()
-    } catch (err) {
-      console.warn("Microphone audio capture not available:", err)
-    }
-  }, [])
-
-  // Browser SpeechSynthesis Fallback
-  const fallbackBrowserSpeech = useCallback(
-    (textToSpeak: string) => {
-      if (typeof window === "undefined" || !window.speechSynthesis) {
-        setVoiceState("listening")
-        return
-      }
-
-      window.speechSynthesis.cancel()
-      const utterance = new SpeechSynthesisUtterance(textToSpeak)
-      utterance.rate = 1.05
-      utterance.pitch = 1.0
-
-      const assignVoice = () => {
-        const voices = window.speechSynthesis.getVoices()
-        const chosenVoice =
-          voices.find(
-            (v) =>
-              v.lang.startsWith("en") &&
-              (v.name.includes("Google") || v.name.includes("Natural")),
-          ) || voices[0]
-        if (chosenVoice) utterance.voice = chosenVoice
-      }
-
-      assignVoice()
-      if (!utterance.voice && window.speechSynthesis.onvoiceschanged !== undefined) {
-        window.speechSynthesis.onvoiceschanged = assignVoice
-      }
-
-      setVoiceState("speaking")
-      setSubtitle(textToSpeak)
-
-      utterance.onend = () => {
-        setVoiceState("listening")
-        setSubtitle("Ready for your next command...")
-        if (isListeningRef.current) {
-          startRecognitionRef.current?.()
-        }
-      }
-
-      utterance.onerror = () => {
-        setVoiceState("listening")
-        if (isListeningRef.current) {
-          startRecognitionRef.current?.()
-        }
-      }
-
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume()
-      }
-
-      window.speechSynthesis.speak(utterance)
-    },
-    [],
-  )
-
-  // TTS Output: calls backend TTS stream with resilient browser speech fallback
+  // Robust TTS Player using chunked streaming & local interrupt listener
   const speakText = useCallback(
-    async (textToSpeak: string) => {
+    async (textToSpeak: string, language?: string) => {
       const cleanText = textToSpeak.trim()
       if (isAudioMuted || !cleanText) {
         setVoiceState("listening")
+        if (isListeningRef.current) {
+          startAudioRecordingRef.current?.()
+        }
         return
       }
 
-      if (activeAudioRef.current) {
-        activeAudioRef.current.pause()
-        activeAudioRef.current = null
-      }
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel()
-      }
+      stopAudioCapture()
+      stopAssistantAudio()
 
-      // 1. Attempt backend TTS stream
-      try {
-        const res = await fetch("http://localhost:8000/api/voice/tts/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: cleanText, language: "en", voice: "default" }),
-        })
+      setVoiceState("speaking")
+      setSubtitle(cleanText)
 
-        if (res.ok) {
-          const blob = await res.blob()
-          if (blob && blob.size > 200) {
-            const audioUrl = URL.createObjectURL(blob)
-            const audio = new Audio(audioUrl)
-            activeAudioRef.current = audio
-
-            setVoiceState("speaking")
-            setSubtitle(cleanText)
-
-            audio.onended = () => {
-              setVoiceState("listening")
-              setSubtitle("Ready for your next command...")
-              URL.revokeObjectURL(audioUrl)
-              activeAudioRef.current = null
-              if (isListeningRef.current) {
-                startRecognitionRef.current?.()
-              }
-            }
-
-            audio.onerror = () => {
-              URL.revokeObjectURL(audioUrl)
-              activeAudioRef.current = null
-              fallbackBrowserSpeech(cleanText)
-            }
-
-            await audio.play()
-            return
-          }
-        }
-      } catch (err) {
-        console.debug("Backend TTS stream unreachable, using browser speech fallback:", err)
-      }
-
-      // 2. Fallback to browser SpeechSynthesis
-      fallbackBrowserSpeech(cleanText)
+      await playAssistantAudio(cleanText, language || "en", {
+        onStart: () => {
+          setVoiceState("speaking")
+        },
+        onChunkStart: (chunk) => {
+          setSubtitle(chunk)
+        },
+        onInterrupt: () => {
+          console.log("TTS interrupted: stopping audio and turning mic off")
+          stopAssistantAudio()
+          stopAudioCapture()
+          isListeningRef.current = false
+          setVoiceState("idle")
+          setSubtitle("Microphone turned off. Tap mic to speak.")
+        },
+        onEnd: () => {
+          stopAudioCapture()
+          isListeningRef.current = false
+          setVoiceState("idle")
+          setSubtitle("Response complete. Tap mic to speak.")
+        },
+      })
     },
-    [isAudioMuted, fallbackBrowserSpeech],
+    [isAudioMuted, stopAudioCapture],
   )
+
+  useEffect(() => {
+    speakTextRef.current = speakText
+  }, [speakText])
 
   // Handle Query Submission (Voice or Text)
   const handleProcessQuery = useCallback(
@@ -338,7 +249,9 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       const clean = queryText.trim()
       if (!clean) return
 
-      // Push AI assistant to the side on first command!
+      stopAudioCapture()
+      stopAssistantAudio()
+
       setHasExecutedCommand(true)
       setForceCenterView(false)
 
@@ -354,22 +267,36 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       setTranscriptHistory((prev) => [...prev, userEntry])
       setSubtitle(`"${clean}"`)
       setInputValue("")
-
-      // Switch to Thinking
       setVoiceState("thinking")
 
       try {
-        // Query AI Backend
-        const res = await fetch("http://localhost:8000/api/solve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ problem: clean }),
-        })
+        let aiAnswer = ""
 
-        if (!res.ok) throw new Error("API solve endpoint offline")
+        if (onSubmitVoicePrompt) {
+          const res = await onSubmitVoicePrompt(clean)
+          if (typeof res === "string" && res) {
+            aiAnswer = res
+          }
+        }
 
-        const data = await res.json()
-        const aiAnswer = data.final_answer || data.final_synthesized_answer || "Task executed successfully across multi-agent nodes."
+        if (!aiAnswer) {
+          const res = await fetch("http://localhost:8000/api/solve", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ problem: clean, mode: "ask" }),
+          })
+
+          if (!res.ok) throw new Error("API solve endpoint offline")
+
+          const data = await res.json()
+          const rawAnswer =
+            data.final_answer ||
+            data.final_synthesized_answer ||
+            "Task executed successfully across multi-agent nodes."
+          aiAnswer = rawAnswer.replace(/\\u([0-9a-fA-F]{4})/g, (_: string, hex: string) =>
+            String.fromCharCode(parseInt(hex, 16))
+          )
+        }
 
         const assistantEntry: TranscriptEntry = {
           id: `ai-${Date.now()}`,
@@ -379,175 +306,317 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         }
         setTranscriptHistory((prev) => [...prev, assistantEntry])
 
-        // Add to Command Results for the left results canvas
         const newResult: CommandResult = {
           id: `cmd-${Date.now()}`,
           query: clean,
           answer: aiAnswer,
           time: timeStr,
           status: "complete",
-          sources: ["CHAI Knowledge Graph", "Live Web Synthesis", "Supabase Vector Store"],
+          sources: ["CHAI Knowledge Graph", "Live Web Synthesis"],
           keyPoints: [
             "Neural pipeline resolved problem parameters",
-            "Multi-agent reasoning validated through 3 verification nodes",
-            "Real-time synthesis streamed to user canvas",
+            "Synthesized response ready",
           ],
         }
         setCommandResults((prev) => [newResult, ...prev])
 
-        speakText(aiAnswer)
+        speakTextRef.current?.(aiAnswer)
       } catch {
-        // Fallback intelligent response
-        setTimeout(() => {
-          const fallbackAnswer = `Analysis complete for: "${clean}". CHAI has synthesized the core objectives across knowledge clusters. All agent parameters remain operational.`
-          const assistantEntry: TranscriptEntry = {
-            id: `ai-${Date.now()}`,
-            role: "assistant",
-            text: fallbackAnswer,
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          }
-          setTranscriptHistory((prev) => [...prev, assistantEntry])
-
-          const newResult: CommandResult = {
-            id: `cmd-${Date.now()}`,
-            query: clean,
-            answer: fallbackAnswer,
-            time: timeStr,
-            status: "complete",
-            sources: ["Multi-Agent Reasoning Core", "Local Knowledge Cache"],
-            keyPoints: [
-              "Command parsed and executed in standby mode",
-              "Agent clusters synchronized and awaiting next transmission",
-            ],
-          }
-          setCommandResults((prev) => [newResult, ...prev])
-
-          speakText(fallbackAnswer)
-        }, 1100)
+        const fallbackAnswer = `Analysis complete for: "${clean}". CHAI has synthesized the core objectives across knowledge clusters. Ready for next command.`
+        const assistantEntry: TranscriptEntry = {
+          id: `ai-${Date.now()}`,
+          role: "assistant",
+          text: fallbackAnswer,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        }
+        setTranscriptHistory((prev) => [...prev, assistantEntry])
+        speakTextRef.current?.(fallbackAnswer)
       }
     },
-    [speakText],
+    [onSubmitVoicePrompt, stopAudioCapture],
   )
 
-  // Dedicated Continuous Speech Recognition Controller
-  const startRecognition = useCallback(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) return
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort()
-      } catch {}
-      recognitionRef.current = null
-    }
-
-    try {
-      const recognition = new SpeechRecognition()
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = "en-US"
-
-      recognition.onstart = () => {
-        isListeningRef.current = true
-        setVoiceState("listening")
-      }
-
-      recognition.onresult = (event: any) => {
-        let currentTranscript = ""
-        let isFinal = false
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const res = event.results[i]
-          currentTranscript += res[0].transcript
-          if (res.isFinal) isFinal = true
-        }
-
-        if (currentTranscript.trim()) {
-          setSubtitle(`"${currentTranscript.trim()}"`)
-        }
-
-        if (isFinal && currentTranscript.trim()) {
-          handleProcessQuery(currentTranscript.trim())
-        }
-      }
-
-      recognition.onerror = (event: any) => {
-        if (event.error === "no-speech" || event.error === "aborted") return
-        console.warn("Speech recognition notice:", event.error)
-      }
-
-      recognition.onend = () => {
-        // Automatically maintain continuous listening while in listening state
-        if (isListeningRef.current) {
-          setTimeout(() => {
-            if (isListeningRef.current) {
-              try {
-                recognition.start()
-              } catch {}
-            }
-          }, 300)
-        }
-      }
-
-      recognitionRef.current = recognition
-      recognition.start()
-    } catch (err) {
-      console.warn("Could not start SpeechRecognition:", err)
-    }
+  useEffect(() => {
+    handleProcessQueryRef.current = handleProcessQuery
   }, [handleProcessQuery])
 
+  // Start Real Microphone Recording with Web Audio Silence Detection (4.5s)
+  const startAudioRecording = useCallback(async () => {
+    if (!isListeningRef.current || isAssistantAudioPlaying()) return
+
+    stopAudioCapture()
+
+    try {
+      if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        setSubtitle("Microphone access is unavailable.")
+        setVoiceState("idle")
+        return
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      })
+      mediaStreamRef.current = stream
+
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
+      const audioCtx = new AudioContextClass()
+      audioContextRef.current = audioCtx
+
+      const source = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.8
+      source.connect(analyser)
+      setAudioAnalyser(analyser)
+
+      // MediaRecorder initialization
+      let mimeType = "audio/webm;codecs=opus"
+      if (typeof MediaRecorder !== "undefined") {
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/webm"
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = "audio/ogg;codecs=opus"
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = ""
+            }
+          }
+        }
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current
+        audioChunksRef.current = []
+        if (!chunks.length) {
+          if (isListeningRef.current && !isAssistantAudioPlaying()) {
+            setSubtitle("Listening to your voice...")
+            startAudioRecordingRef.current?.()
+          }
+          return
+        }
+
+        const audioBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" })
+        if (audioBlob.size < 150) {
+          if (isListeningRef.current && !isAssistantAudioPlaying()) {
+            setSubtitle("Listening to your voice...")
+            startAudioRecordingRef.current?.()
+          }
+          return
+        }
+
+        setVoiceState("thinking")
+        setSubtitle("Transcribing speech...")
+
+        try {
+          const formData = new FormData()
+          formData.append("audio", audioBlob, "speech.webm")
+
+          let res = await fetch("http://localhost:8000/api/voice/stt", {
+            method: "POST",
+            body: formData,
+          })
+
+          if (!res.ok) {
+            res = await fetch("http://localhost:8000/api/stt", {
+              method: "POST",
+              body: formData,
+            })
+          }
+
+          if (!res.ok) throw new Error(`STT failed with status ${res.status}`)
+
+          const data = await res.json()
+          const transcript = (data.text || data.transcript || "").trim()
+
+          if (transcript) {
+            setSubtitle(`"${transcript}"`)
+            // Auto-submit transcript immediately to existing solve flow
+            await handleProcessQueryRef.current?.(transcript)
+          } else {
+            setSubtitle("No speech was detected.")
+            setVoiceState("listening")
+            if (isListeningRef.current && !isAssistantAudioPlaying()) {
+              startAudioRecordingRef.current?.()
+            }
+          }
+        } catch (sttErr) {
+          console.error("STT transcription error:", sttErr)
+          setSubtitle("Could not transcribe speech.")
+          setVoiceState("listening")
+          if (isListeningRef.current && !isAssistantAudioPlaying()) {
+            startAudioRecordingRef.current?.()
+          }
+        }
+      }
+
+      hasSpeechRef.current = false
+      silenceStartRef.current = null
+      recordingStartRef.current = Date.now()
+      isRecordingRef.current = true
+
+      recorder.start(250)
+      setVoiceState("listening")
+      setSubtitle("Listening to your voice...")
+
+      // Real silence detection loop using AnalyserNode
+      const timeData = new Uint8Array(analyser.frequencyBinCount)
+      const freqData = new Uint8Array(analyser.frequencyBinCount)
+
+      const monitorAudio = () => {
+        if (!isRecordingRef.current) return
+
+        // 1. Frequency visualizer calculation
+        analyser.getByteFrequencyData(freqData)
+        let sumFreq = 0
+        for (let i = 0; i < freqData.length; i++) {
+          sumFreq += freqData[i]
+        }
+        const avgLevel = sumFreq / freqData.length / 255
+        setAudioLevel(avgLevel)
+
+        // 2. RMS calculation from time domain data
+        analyser.getByteTimeDomainData(timeData)
+        let sumSquares = 0
+        for (let i = 0; i < timeData.length; i++) {
+          const norm = (timeData[i] - 128) / 128
+          sumSquares += norm * norm
+        }
+        const rms = Math.sqrt(sumSquares / timeData.length)
+
+        const now = Date.now()
+        const duration = now - recordingStartRef.current
+
+        // 3. Speech & silence state machine
+        if (rms >= SPEECH_RMS_THRESHOLD) {
+          if (!hasSpeechRef.current) {
+            hasSpeechRef.current = true
+            setSubtitle("Speech detected, listening...")
+          }
+          // Reset silence timer whenever speech is active
+          silenceStartRef.current = null
+        } else if (hasSpeechRef.current && duration >= MIN_RECORDING_MS) {
+          // Speech was previously detected, now check continuous silence
+          if (rms < SILENCE_RMS_THRESHOLD) {
+            if (silenceStartRef.current === null) {
+              silenceStartRef.current = now
+            } else if (now - silenceStartRef.current >= SILENCE_DURATION_MS) {
+              // 1.5 seconds of continuous silence after speech -> auto stop!
+              console.log("Automatic silence detected (1.5s) - auto-stopping recording")
+              isRecordingRef.current = false
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+                try {
+                  mediaRecorderRef.current.stop()
+                } catch {}
+              }
+              return
+            }
+          } else {
+            silenceStartRef.current = null
+          }
+        }
+
+        // 4. Safety maximum recording timeout
+        if (duration >= MAX_RECORDING_MS) {
+          console.log("Max recording safety limit reached - stopping recording")
+          isRecordingRef.current = false
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+            try {
+              mediaRecorderRef.current.stop()
+            } catch {}
+          }
+          return
+        }
+
+        animationFrameRef.current = requestAnimationFrame(monitorAudio)
+      }
+
+      animationFrameRef.current = requestAnimationFrame(monitorAudio)
+    } catch (err: any) {
+      console.warn("Microphone access error:", err)
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setSubtitle("Microphone permission required for voice.")
+      } else {
+        setSubtitle("Microphone unavailable.")
+      }
+      setVoiceState("idle")
+    }
+  }, [stopAudioCapture])
+
   useEffect(() => {
-    startRecognitionRef.current = startRecognition
-  }, [startRecognition])
+    startAudioRecordingRef.current = startAudioRecording
+  }, [startAudioRecording])
 
   // Toggle Listening State
   const toggleListening = useCallback(async () => {
-    if (voiceState === "listening") {
+    // If speaking, immediately interrupt, stop audio, and turn mic OFF
+    if (voiceState === "speaking" || isAssistantAudioPlaying()) {
+      stopAssistantAudio()
+      stopAudioCapture()
       isListeningRef.current = false
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort()
-        } catch {}
-        recognitionRef.current = null
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel()
       }
+      setVoiceState("idle")
+      setSubtitle("Microphone turned off. Tap mic to speak.")
+      return
+    }
+
+    if (voiceState === "listening") {
+      // Tactile immediate submit: if user tapped orb or mic button after speaking, immediately process STT
+      const duration = Date.now() - recordingStartRef.current
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state === "recording" &&
+        (hasSpeechRef.current || duration > 400)
+      ) {
+        console.log("Tactile submit: user tapped orb/mic while speaking - triggering immediate STT")
+        setSubtitle("Transcribing speech...")
+        setVoiceState("thinking")
+        isRecordingRef.current = false
+        try {
+          mediaRecorderRef.current.stop()
+        } catch {}
+        return
+      }
+
+      isListeningRef.current = false
       stopAudioCapture()
       setVoiceState("idle")
       setSubtitle("Microphone paused. Ready.")
       return
     }
 
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel()
-    }
-
     isListeningRef.current = true
     setVoiceState("listening")
     setSubtitle("Listening to your voice...")
-    await startAudioCapture()
-    startRecognition()
-  }, [voiceState, startAudioCapture, stopAudioCapture, startRecognition])
+    await startAudioRecording()
+  }, [voiceState, stopAudioCapture, startAudioRecording])
 
   useEffect(() => {
     if (initialPrompt) {
       handleProcessQuery(initialPrompt)
     } else {
       isListeningRef.current = true
-      startAudioCapture()
-      startRecognition()
+      startAudioRecording()
     }
 
     return () => {
       isListeningRef.current = false
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort()
-        } catch {}
-        recognitionRef.current = null
-      }
+      stopAssistantAudio()
       stopAudioCapture()
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel()
-      }
     }
   }, [])
 
@@ -1038,6 +1107,17 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
                 >
                   {subtitle}
                 </div>
+
+                {voiceState === "speaking" && (
+                  <button
+                    type="button"
+                    onClick={toggleListening}
+                    className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-500/50 bg-red-500/20 py-2 text-xs font-bold text-red-400 hover:bg-red-500/30 transition shadow-[0_0_15px_rgba(239,68,68,0.35)] animate-pulse cursor-pointer"
+                  >
+                    <Square className="size-3 fill-current" />
+                    <span>Stop Speaking (shout &ldquo;Stop&rdquo; or Esc)</span>
+                  </button>
+                )}
               </div>
 
               {/* Middle: Quick Category Shortcuts */}
@@ -1209,6 +1289,19 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
               >
                 {subtitle}
               </p>
+
+              {voiceState === "speaking" && (
+                <div className="mt-3 flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={toggleListening}
+                    className="flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-500/20 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-red-400 hover:bg-red-500/30 transition shadow-[0_0_20px_rgba(239,68,68,0.4)] animate-pulse cursor-pointer"
+                  >
+                    <Square className="size-3.5 fill-current" />
+                    <span>Stop Speaking (shout &ldquo;Stop&rdquo; or press Esc)</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Quick Voice Command Chips */}

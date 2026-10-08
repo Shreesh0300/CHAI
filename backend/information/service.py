@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import time
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -158,27 +159,37 @@ class InformationAcquisitionService:
             f"for query: '{cleaned_query[:50]}...'"
         )
 
-        # 2. Execute each source with strict error isolation
-        for src in target_sources:
+        # 2. Execute each source concurrently with strict error isolation
+        async def _run_source(src):
             stype = getattr(src, "source_type", "unknown")
             try:
-                src_items = await src.acquire(query=cleaned_query, context=context)
-                if src_items:
-                    all_items.extend(src_items)
-                    sources_used.append(stype)
-                    source_counts[stype] = len(src_items)
-                else:
-                    source_counts[stype] = 0
-
-                # Check if the source recorded non-fatal partial errors
-                if hasattr(src, "last_errors") and src.last_errors:
-                    all_errors.extend(src.last_errors)
-
+                src_items = await asyncio.wait_for(
+                    src.acquire(query=cleaned_query, context=context),
+                    timeout=12.0,
+                )
+                last_errs = list(getattr(src, "last_errors", []) or [])
+                return stype, src_items or [], last_errs, None
+            except asyncio.TimeoutError:
+                err_msg = f"{stype.capitalize()} acquisition source timed out (12s limit)"
+                logger.warning(f"InformationAcquisitionService: {err_msg}")
+                return stype, [], [], err_msg
             except Exception as src_err:
                 err_msg = f"{stype.capitalize()} acquisition source failed: {type(src_err).__name__}"
                 logger.error(f"InformationAcquisitionService: {err_msg} ({src_err})")
-                all_errors.append(err_msg)
+                return stype, [], [], err_msg
+
+        results = await asyncio.gather(*[_run_source(src) for src in target_sources])
+        for stype, src_items, last_errs, err_msg in results:
+            if src_items:
+                all_items.extend(src_items)
+                sources_used.append(stype)
+                source_counts[stype] = len(src_items)
+            else:
                 source_counts[stype] = 0
+            if last_errs:
+                all_errors.extend(last_errs)
+            if err_msg:
+                all_errors.append(err_msg)
 
         # 3. Deduplicate items by URL / title
         deduped_items = self._deduplicate_items(all_items)

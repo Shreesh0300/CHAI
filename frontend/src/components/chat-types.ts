@@ -6,7 +6,10 @@ export interface PromptInputMeta {
   model: string
   effort: string
   attachments: File[]
+  isVoice?: boolean
+  language?: string
 }
+
 
 export interface ChatMessage {
   id: string
