@@ -18,10 +18,13 @@ logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
-FALLBACK_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+FALLBACK_TTS_MODELS = [
+    "gemini-3.8-flash-lite-tts",
+    "models/gemini-3.8-flash-tts",
+    "models/gemini-3.8-flash-lite-tts",
+]
 
 LANGUAGE_INSTRUCTIONS = {
-    "en": "Read the following text aloud in clear English with natural pronunciation:",
     "hi": "Read the following text aloud in Hindi (हिंदी) with natural pronunciation:",
     "kn": "Read the following text aloud in Kannada (ಕನ್ನಡ) with natural pronunciation:",
     "sa": "Read the following text aloud in Sanskrit (संस्कृतम्) with clear Vedic/classical pronunciation:",
@@ -67,13 +70,19 @@ class TTSService:
         return api_key
 
     def _build_prompt(self, text: str, language: str) -> str:
-        """Construct language-aware prompt for Gemini TTS model."""
+        """
+        Construct prompt for Gemini TTS model.
+        For English, return verbatim text so the model does not voice instructions.
+        For non-English languages, guide pronunciation using native language instruction.
+        """
         canon_lang = canonicalize_language(language) or DEFAULT_LANGUAGE
+        if canon_lang == "en":
+            return text.strip()
         instruction = LANGUAGE_INSTRUCTIONS.get(
             canon_lang,
-            f"Read the following text aloud in {canon_lang} with natural pronunciation:",
+            f"Read the following text aloud in {canon_lang}:",
         )
-        return f"{instruction}\n\n{text}"
+        return f"{instruction}\n\n{text.strip()}"
 
     async def synthesize(
         self,
@@ -115,33 +124,33 @@ class TTSService:
         client = genai.Client(api_key=api_key)
         prompt = self._build_prompt(text_str, canon_lang)
 
-        # Attempt synthesis with configured model; fallback if rate limited
-        model_name = self.model_name
-        try:
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-        except Exception as err:
-            err_str = str(err)
-            if (
-                "429" in err_str
-                or "RESOURCE_EXHAUSTED" in err_str
-                or "404" in err_str
-                or "NOT_FOUND" in err_str
-            ) and model_name != FALLBACK_TTS_MODEL:
-                logger.warning(
-                    f"TTS model '{model_name}' encountered quota/error ({err_str[:80]}). "
-                    f"Falling back to '{FALLBACK_TTS_MODEL}'."
-                )
-                model_name = FALLBACK_TTS_MODEL
+        # Candidates to try in sequence
+        candidate_models = [self.model_name] + [
+            m for m in FALLBACK_TTS_MODELS if m != self.model_name
+        ]
+
+        response = None
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
                 response = await client.aio.models.generate_content(
                     model=model_name,
                     contents=prompt,
                 )
-            else:
-                logger.error(f"Gemini TTS generation error with model '{model_name}': {err}")
-                raise RuntimeError(f"Gemini TTS generation failed: {err}")
+                if response:
+                    break
+            except Exception as err:
+                last_error = err
+                err_str = str(err)
+                logger.warning(
+                    f"TTS model '{model_name}' encountered error ({err_str[:80]}). "
+                    f"Trying next fallback model."
+                )
+                continue
+
+        if response is None:
+            raise RuntimeError(f"All Gemini TTS models exhausted. Last error: {last_error}")
 
         # Extract audio bytes from response parts
         audio_data: Optional[bytes] = None

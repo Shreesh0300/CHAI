@@ -349,10 +349,16 @@ class Coordinator:
             limitations=limitations,
         )
 
+        # Provide both canonical lowercase and TitleCase keys for frontend compatibility
+        formatted_agent_outputs = dict(agent_outputs)
+        for k, v in list(agent_outputs.items()):
+            if isinstance(k, str):
+                formatted_agent_outputs[k.capitalize()] = v
+
         return FinalResponse(
             request_status=request_status,
             selected_agents=selected_agents,
-            agent_outputs=agent_outputs,
+            agent_outputs=formatted_agent_outputs,
             retrieved_sources=retrieved_sources,
             agent_execution_statuses=execution_statuses,
             evaluation_findings=evaluation_findings,
