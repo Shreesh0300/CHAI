@@ -55,6 +55,7 @@ def route_agents_for_problem(
     problem: str,
     requested_agents: Optional[List[str]] = None,
     allow_conditional_routing: bool = False,
+    model: Optional[str] = None,
 ) -> List[str]:
     """
     Routes and selects which agents should run for a given problem.
@@ -67,6 +68,8 @@ def route_agents_for_problem(
         Explicit agent list if specified by the user or client.
     allow_conditional_routing : bool
         If True, permits scaling down to fewer agents for simple questions.
+    model : Optional[str]
+        Category/domain mode: "Auto", "Business", "Personal", "Software".
 
     Returns
     -------
@@ -78,6 +81,16 @@ def route_agents_for_problem(
         valid = [a.lower().strip() for a in requested_agents if a.lower().strip() in CANONICAL_AGENTS]
         if valid:
             return valid
+
+    # Model domain routing
+    if model:
+        m = model.strip().lower()
+        if m == "business":
+            return ["researcher", "strategist", "evaluator"]
+        elif m == "personal":
+            return ["researcher", "guardian", "strategist", "evaluator"]
+        elif m == "software":
+            return ["engineer", "security", "researcher", "evaluator"]
 
     if allow_conditional_routing and is_simple_factual_query(problem):
         # Lightweight route for trivial definitional queries

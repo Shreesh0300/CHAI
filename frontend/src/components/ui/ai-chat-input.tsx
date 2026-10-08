@@ -54,24 +54,34 @@ function MorphingText({ text }: { text: string }) {
 }
 
 function ModelIcon({ model, className }: { model: string; className?: string }) {
-  const icons: Record<string, string> = {
-    "Composer 2.5": "https://cdn.21st.dev/assets/mirror/7d/7dc00bc09f225fcda46cbc9c6b669c69c025a231877d6c17baa6a003f04f02b2.svg",
-    "Gemini 3.5 Flash": "https://cdn.21st.dev/assets/mirror/cd/cda2df6631d5fa227de3fa04ed78cf354f910ba92a9f086e7455655c10ad9d09.svg",
-    "GPT 5.5": "https://cdn.21st.dev/assets/mirror/b9/b93fa7942be639a1dae60194ff12141145d7d9fd59581582d6ff23335755f19c.svg",
-    "Opus 4.8": "https://cdn.21st.dev/assets/mirror/5d/5de1221c77cc91e748066fd642ad0eee1c1fa65328814f5178166f901e599709.svg",
-    "GLM 5.2": "https://cdn.21st.dev/assets/mirror/b2/b2a6c0ff63efd8a555edf8a174ea6fcfeca120ac1595a2d461ca11d3ae89276c.svg"
-  };
-
-  const filters: Record<string, string> = {
-    "GPT 5.5": "dark:invert", 
-  };
-
+  if (model === "Business") {
+    return (
+      <svg className={cn("size-3.5 object-contain text-blue-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect width="20" height="14" x="2" y="7" rx="2" />
+        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+      </svg>
+    );
+  }
+  if (model === "Personal") {
+    return (
+      <svg className={cn("size-3.5 object-contain text-emerald-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+        <circle cx="12" cy="7" r="4" />
+      </svg>
+    );
+  }
+  if (model === "Software") {
+    return (
+      <svg className={cn("size-3.5 object-contain text-amber-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="16 18 22 12 16 6" />
+        <polyline points="8 6 2 12 8 18" />
+      </svg>
+    );
+  }
   return (
-    <img 
-      src={icons[model] || icons["GPT 5.5"]} 
-      alt={model} 
-      className={cn("object-contain", filters[model], className)} 
-    />
+    <svg className={cn("size-3.5 object-contain text-purple-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+    </svg>
   );
 }
 
@@ -312,7 +322,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       onSubmit,
       placeholder = "Ask anything",
       className,
-      models = ["GPT 5.5", "Opus 4.8", "Gemini 3.5 Flash", "Composer 2.5", "GLM 5.2"],
+      models = ["Auto", "Business", "Personal", "Software"],
       efforts = ["Low", "Medium", "Max Effort"],
       defaultValue = "",
       value: controlledValue,
@@ -1006,11 +1016,9 @@ import {
 
 const CHAT_MODELS = [
   "Auto",
-  "GPT 5.5",
-  "Opus 4.8",
-  "Gemini 3.5 Flash",
-  "Composer 2.5",
-  "GLM 5.2",
+  "Business",
+  "Personal",
+  "Software",
 ] as const;
 
 const CHAT_EFFORTS = ["Quick", "Balanced", "Deep"] as const;

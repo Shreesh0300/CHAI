@@ -87,6 +87,7 @@ class Coordinator:
         selected_agents = route_agents_for_problem(
             problem=normalized_problem,
             requested_agents=request.selected_agents,
+            model=getattr(request, "model", "Auto"),
         )
 
         agent_outputs: Dict[str, Any] = {}
@@ -95,7 +96,8 @@ class Coordinator:
         evaluation_findings: Optional[Any] = None
         detected_conflicts: List[str] = []
 
-        lang_context_str = f"User language: {resolved_lang}"
+        model_mode = (getattr(request, "model", "Auto") or "Auto").strip()
+        lang_context_str = f"User language: {resolved_lang}. Domain: {model_mode}."
 
 
         # -------------------------------------------------------------

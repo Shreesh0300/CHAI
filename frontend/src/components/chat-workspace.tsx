@@ -316,7 +316,10 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     fetch("http://localhost:8000/api/solve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ problem: prompt }),
+      body: JSON.stringify({
+        problem: prompt,
+        model: meta.model || "Auto",
+      }),
     })
       .then(async (res) => {
         if (!res.ok) throw new Error("API error")

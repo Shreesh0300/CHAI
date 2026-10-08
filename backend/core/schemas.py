@@ -11,6 +11,10 @@ class SolveRequest(BaseModel):
         default=None,
         description="Optional ISO language code ('en', 'hi', 'kn'). Auto-detected if omitted."
     )
+    model: Optional[str] = Field(
+        default="Auto",
+        description="Selected model domain/mode: 'Auto', 'Business', 'Personal', 'Software'."
+    )
 
     @field_validator("language")
     @classmethod

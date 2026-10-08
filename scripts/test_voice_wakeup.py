@@ -78,7 +78,7 @@ def is_wake_word_present(text: str) -> bool:
 def play_audio(audio_path: Path) -> None:
     """Play audio (MP3 or WAV) aloud through computer speakers using native Windows APIs."""
     audio_path = audio_path.resolve()
-    print("🔊 Speaking aloud through system speakers...")
+    print("[Audio] Speaking aloud through system speakers...")
 
     try:
         header = audio_path.read_bytes()[:4]
@@ -149,7 +149,7 @@ def record_microphone(duration: int = 7, samplerate: int = 16000) -> bytes:
     print("           CHAI VOICE WAKE-UP & TTS TEST            ")
     print("=" * 60)
     print(f"Using input device: {dev_name}")
-    print(f"🎤 Recording {duration}s of audio... Speak now! (e.g. 'Welcome back CHAI')")
+    print(f"[Mic] Recording {duration}s of audio... Speak now! (e.g. 'Welcome back CHAI')")
     
     audio = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype="int16")
     sd.wait()
@@ -158,7 +158,7 @@ def record_microphone(duration: int = 7, samplerate: int = 16000) -> bytes:
     print(f"Recording complete (audio peak level: {peak_pct:.1f}%).")
     
     if peak < 300:
-        print("⚠️ Very low volume detected. Check if your microphone is unmuted.")
+        print("[Notice] Very low volume detected. Check if your microphone is unmuted.")
     return audio.tobytes()
 
 
@@ -171,7 +171,7 @@ async def wake_up_and_speak(spoken_text: str, detected_language: str = "en") -> 
     reply_text = RESPONSES.get(lang, RESPONSES["en"])
 
     print("\n" + "=" * 60)
-    print("✨ 🌟 [WAKE-UP EVENT TRIGGERED] 🌟 ✨")
+    print("***** [WAKE-UP EVENT TRIGGERED] *****")
     print("=" * 60)
     print(f"Spoken User Input: '{spoken_text}'")
     print(f"Detected Language: {lang}")

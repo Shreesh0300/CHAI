@@ -39,7 +39,7 @@ async def main() -> None:
 
         # Play audio aloud through system speakers
         try:
-            print("🔊 Playing synthesized speech through system speakers...")
+            print("[Audio] Playing synthesized speech through system speakers...")
             header = audio_bytes[:4]
             is_wav = header.startswith(b"RIFF")
             if is_wav:
