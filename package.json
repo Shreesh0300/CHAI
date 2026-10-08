@@ -1,0 +1,12 @@
+{
+  "name": "chai-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CHAI - Coordinated Hybrid Agentic Intelligence",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint",
+    "backend": "python scripts/run_backend.py"
+  }
+}
