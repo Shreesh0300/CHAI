@@ -7,3 +7,4 @@ dist/
 .vscode/
 .pytest_cache/
 test_chai_terminal.py
+*.db

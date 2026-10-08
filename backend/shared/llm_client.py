@@ -30,6 +30,7 @@ def get_default_gemini_model() -> str:
     Returns the configured Gemini model name from GEMINI_MODEL env var,
     defaulting to 'gemini-flash-lite-latest'.
     """
+    load_dotenv(override=True)
     return os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip() or "gemini-flash-lite-latest"
 
 
@@ -38,6 +39,7 @@ def get_gemini_api_key() -> str:
     Safely retrieves the Gemini API key from environment variables or settings.
     Never logs or exposes the key value.
     """
+    load_dotenv(override=True)
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         try:
@@ -169,6 +171,16 @@ class GeminiClient:
         Asynchronously generates content from Gemini using the modern google-genai SDK.
         Supports system instructions, typed structured response schemas, and timeout bounds.
         """
+        # Dynamically check for updated API key
+        fresh_key = get_gemini_api_key()
+        if fresh_key and fresh_key != self.api_key:
+            self.api_key = fresh_key
+            try:
+                from google import genai
+                self._client = genai.Client(api_key=self.api_key)
+            except Exception:
+                pass
+
         if not self.api_key or os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes"):
             return "Mock response: API key not configured."
 
@@ -181,6 +193,7 @@ class GeminiClient:
                 raise RuntimeError(f"{err_cat} {err_msg}") from None
 
         effective_timeout = timeout or DEFAULT_TIMEOUT_SECONDS
+        effective_model = get_default_gemini_model()
 
         try:
             from google.genai import types
@@ -200,7 +213,7 @@ class GeminiClient:
             config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
             coro = self._client.aio.models.generate_content(
-                model=self.model_name,
+                model=effective_model,
                 contents=prompt,
                 config=config,
             )

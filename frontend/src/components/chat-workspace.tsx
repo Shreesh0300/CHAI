@@ -233,10 +233,10 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     }
 
     setIsResponding(true)
-    fetch(`${API_BASE}/api/solve`, {
+    fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ problem: prompt }),
+      body: JSON.stringify({ message: prompt, problem: prompt }),
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -245,6 +245,7 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
         }
         const data = await res.json()
         const content =
+          data.message ||
           data.final_synthesized_answer ||
           data.final_answer ||
           createAssistantReply(prompt, nextLayout, isFollowUp)

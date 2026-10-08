@@ -287,11 +287,11 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       setVoiceState("thinking")
 
       try {
-        // Query AI Backend
-        const res = await fetch(`${API_BASE}/api/solve`, {
+        // Query AI Backend (unified /api/chat endpoint)
+        const res = await fetch(`${API_BASE}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ problem: clean }),
+          body: JSON.stringify({ message: clean, problem: clean }),
         })
 
         if (!res.ok) {
@@ -301,6 +301,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
         const data = await res.json()
         const aiAnswer =
+          data.message ||
           data.final_synthesized_answer ||
           data.final_answer ||
           "Task executed successfully across multi-agent nodes."
