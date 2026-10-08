@@ -14,7 +14,9 @@ from backend.core.schemas import (
     FinalResponse,
     AgentExecutionStatus,
     CHAIExecutionResult,
+    RouteDecision,
 )
+from backend.shared.llm_client import llm_client
 from backend.core.state import (
     create_initial_state,
     CHAIState,
@@ -41,6 +43,7 @@ from backend.agents.synthesizer.agent import SynthesizerAgent
 from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent
 from backend.agents.reliability_monitor.schemas import ReliabilityAction
 from backend.validation.output_validator import OutputValidator, OutputValidationResult
+from backend.synthesis.response_formatter import format_user_facing_response, normalize_unicode_escapes
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -85,6 +88,7 @@ class CHAICoordinator:
         reliability_monitor: Optional[Any] = None,
         output_validator: Optional[Any] = None,
         information_acquisition: Optional[Any] = None,
+        direct_llm: Optional[Any] = None,
         **kwargs: Any,
     ):
         self.information_acquisition = information_acquisition or InformationAcquisitionService()
@@ -98,6 +102,7 @@ class CHAICoordinator:
         self.synthesizer = synthesizer or SynthesizerAgent()
         self.reliability_monitor = reliability_monitor or ReliabilityMonitorAgent()
         self.output_validator = output_validator or OutputValidator()
+        self.direct_llm = direct_llm
 
         self._agent_instances = {
             "information_acquisition": self.information_acquisition,
@@ -147,25 +152,50 @@ class CHAICoordinator:
         # -------------------------------------------------------------
         # Determine Route and Selected Agents
         # -------------------------------------------------------------
+        route_decision: Optional[RouteDecision] = None
+        req_mode = (getattr(request, "mode", None) or "ask").lower().strip()
+
         if request.selected_agents is not None:
+            honor_explicit_agents = True
+        else:
+            honor_explicit_agents = False
+
+        if honor_explicit_agents and request.selected_agents is not None:
             selected_agents = [a.lower().strip() for a in request.selected_agents]
             route = "simple" if not selected_agents else "complex"
             complexity = "low" if not selected_agents else "high"
-        elif is_simple_query(request.problem):
-            selected_agents = []
-            route = "simple"
-            complexity = "low"
         else:
+            # ASK mode (default): Router is the final authority
             route_decision = route_request(request.problem, getattr(request, "context", None))
-            route = route_decision.route
-            complexity = route_decision.complexity
+            if req_mode == "agent":
+                route = "complex"
+                complexity = "high"
+            else:
+                route = route_decision.route
+                complexity = route_decision.complexity
+
             if route == "simple":
                 selected_agents = []
             else:
-                selected_agents = list(CANONICAL_AGENTS)
+                # Domain-aware adaptive agent selection:
+                # Personal/career decision: exclude irrelevant engineer/security agents unless technical requirements exist
+                has_tech = any(w in request.problem.lower() for w in ["tech", "software", "engineer", "code", "architecture", "platform", "system", "database", "security"])
+                if route_decision.domain == "personal_career" and not has_tech:
+                    selected_agents = [
+                        "researcher",
+                        "strategist",
+                        "guardian",
+                        "evaluator",
+                        "conflict_resolver",
+                        "synthesizer",
+                        "reliability_monitor",
+                    ]
+                else:
+                    selected_agents = list(CANONICAL_AGENTS)
 
         execution_trace.append({
             "agent": "router",
+            "stage": "router",
             "status": "completed",
             "timestamp": _iso_now(),
             "duration_ms": 0.0,
@@ -176,7 +206,80 @@ class CHAICoordinator:
         # Simple Direct Response Path (No specialized agents invoked)
         # -------------------------------------------------------------
         if route == "simple" or (request.selected_agents is not None and not selected_agents):
-            direct_text = f"Direct response provided for: {request.problem}"
+            t0 = time.monotonic()
+            direct_text = ""
+            try:
+                if self.direct_llm:
+                    if hasattr(self.direct_llm, "generate_content"):
+                        direct_text = await self.direct_llm.generate_content(request.problem)
+                    else:
+                        direct_text = await self.direct_llm(request.problem)
+                elif os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes") and not llm_client.api_key:
+                    direct_text = f"Direct response provided for: {request.problem}"
+                else:
+                    prompt = (
+                        "You are CHAI, an intelligent, helpful, accurate, and concise AI assistant.\n"
+                        "Answer the following question directly, clearly, and naturally in 1-4 sentences.\n"
+                        "- Provide the direct answer in the very first sentence.\n"
+                        "- Keep the response concise (1-4 sentences) unless more detail was specifically requested.\n"
+                        "- Do NOT repeat or rephrase the question.\n"
+                        "- Do NOT use Markdown headings, sections, or bullet lists for simple questions.\n"
+                        "- Do NOT mention any agents, internal systems, or multi-agent pipelines.\n"
+                        "- Maintain flawless grammar, punctuation, and natural English.\n\n"
+                        f"Question: {request.problem}"
+                    )
+                    direct_text = await llm_client.generate_content(prompt)
+                    if not direct_text or direct_text.strip() == "Mock response: API key not configured.":
+                        direct_text = f"Direct response provided for: {request.problem}"
+            except Exception as e:
+                logger.error(f"Direct LLM call failed: {e}")
+                execution_trace.append({
+                    "agent": "direct_llm",
+                    "stage": "direct_llm",
+                    "status": "failed",
+                    "timestamp": _iso_now(),
+                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+                    "error": str(e),
+                })
+                return FinalResponse(
+                    request_id=getattr(request, "request_id", None) or state.get("request_id"),
+                    request_status="failed",
+                    status="failed",
+                    route="simple",
+                    complexity=complexity,
+                    selected_agents=[],
+                    agent_outputs={},
+                    retrieved_sources=[],
+                    acquired_information=[],
+                    agent_execution_statuses=[],
+                    evaluation_findings=None,
+                    security_findings=None,
+                    detected_conflicts=[],
+                    final_synthesized_answer=f"Error generating direct response: {e}",
+                    final_answer=f"Error generating direct response: {e}",
+                    execution_trace=execution_trace,
+                    errors=[str(e)],
+                    limitations=[],
+                    metadata={"route": "simple"},
+                )
+
+            sanitized_direct = normalize_unicode_escapes(direct_text if isinstance(direct_text, str) else str(direct_text))
+            user_facing_direct = format_user_facing_response(
+                query=request.problem,
+                raw_answer=sanitized_direct,
+                route="simple",
+                domain=route_decision.domain if route_decision else "general",
+                requested_depth=route_decision.requested_depth if route_decision else "brief",
+            )
+            user_facing_direct = normalize_unicode_escapes(user_facing_direct)
+
+            execution_trace.append({
+                "agent": "direct_llm",
+                "stage": "direct_llm",
+                "status": "completed",
+                "timestamp": _iso_now(),
+                "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+            })
 
             return FinalResponse(
                 request_id=getattr(request, "request_id", None) or state.get("request_id"),
@@ -192,8 +295,8 @@ class CHAICoordinator:
                 evaluation_findings=None,
                 security_findings=None,
                 detected_conflicts=[],
-                final_synthesized_answer=direct_text,
-                final_answer=direct_text,
+                final_synthesized_answer=sanitized_direct,
+                final_answer=user_facing_direct,
                 execution_trace=execution_trace,
                 errors=[],
                 limitations=[],
@@ -207,10 +310,26 @@ class CHAICoordinator:
         # 0. Information Acquisition
         acquired_info: List[Any] = []
         retrieved_sources: List[str] = []
-        if self.information_acquisition and "researcher" in selected_agents:
+        should_acquire = (
+            (route_decision is None or route_decision.requires_external_information)
+            and self.information_acquisition is not None
+            and "researcher" in selected_agents
+        )
+
+        if should_acquire:
             t0 = time.monotonic()
             try:
-                info_res = await self.information_acquisition.acquire(request.problem)
+                # Select source types: avoid calling irrelevant external financial/currency APIs for general queries
+                target_types = None
+                p_lower = request.problem.lower()
+                is_finance_fx = any(k in p_lower for k in ("currency", "exchange rate", "forex", "usd", "eur", "financial rate", "weather"))
+                if not is_finance_fx and not os.getenv("API_SOURCE_URL"):
+                    target_types = ["web", "model"]
+
+                info_res = await self.information_acquisition.acquire(
+                    request.problem,
+                    source_types=target_types,
+                )
                 if hasattr(info_res, "items"):
                     raw_items = info_res.items
                 elif isinstance(info_res, list):
@@ -229,6 +348,7 @@ class CHAICoordinator:
                         retrieved_sources.append(src)
                 execution_trace.append({
                     "agent": "information_acquisition",
+                    "stage": "information_acquisition",
                     "status": "completed",
                     "timestamp": _iso_now(),
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
@@ -244,11 +364,21 @@ class CHAICoordinator:
                 logger.warning(f"Information Acquisition execution error: {e}")
                 execution_trace.append({
                     "agent": "information_acquisition",
+                    "stage": "information_acquisition",
                     "status": "failed",
                     "timestamp": _iso_now(),
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     "error": str(e),
                 })
+        elif self.information_acquisition is not None and "researcher" in selected_agents and not should_acquire:
+            execution_trace.append({
+                "agent": "information_acquisition",
+                "stage": "information_acquisition",
+                "status": "skipped",
+                "timestamp": _iso_now(),
+                "duration_ms": 0.0,
+                "details": "External information not required for this query.",
+            })
 
         # 1. Researcher
         researcher_fatal_stop = False
@@ -1178,11 +1308,22 @@ class CHAICoordinator:
 
         # Determine agent_outputs representation
         if request.selected_agents is None:
-            # For the general canonical workflow, output the canonical specialist agents
-            final_agent_outputs = {k: v for k, v in agent_outputs.items() if k in CANONICAL_AGENTS}
+            # Output only the agents that were actually selected and executed
+            final_agent_outputs = {k: v for k, v in agent_outputs.items() if k in selected_agents}
         else:
             # When specific agents are requested, preserve all executed outputs
             final_agent_outputs = agent_outputs
+
+        user_facing_deliverable = format_user_facing_response(
+            query=request.problem,
+            raw_answer=final_deliverable,
+            route=route,
+            domain=route_decision.domain if route_decision else "general",
+            requested_depth=route_decision.requested_depth if route_decision else "normal",
+            agent_outputs=final_agent_outputs,
+            reliability_action=rm_action,
+            validation_result=validation_result,
+        )
 
         return FinalResponse(
             request_id=getattr(request, "request_id", None) or state.get("request_id"),
@@ -1199,7 +1340,7 @@ class CHAICoordinator:
             security_findings=security_findings,
             detected_conflicts=detected_conflicts,
             final_synthesized_answer=final_deliverable,
-            final_answer=final_deliverable,
+            final_answer=user_facing_deliverable,
             synthesis_result=agent_outputs.get("synthesizer"),
             validation_result=agent_outputs.get("output_validator"),
             execution_trace=execution_trace,

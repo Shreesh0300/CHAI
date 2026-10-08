@@ -33,6 +33,15 @@ class SecurityResult(BaseModel):
     agent: Literal["security"] = "security"
     status: Literal["completed", "failed"] = "completed"
 
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> Any:
+        if isinstance(v, str) and "security" in v.lower():
+            return "security"
+        return v
+
+
+
     security_summary: str = Field(
         default="",
         description="High-level technical security assessment summary"

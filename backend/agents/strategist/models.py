@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List, Union
+from typing import Literal, Optional, List, Union, Any
 from pydantic import BaseModel, Field, field_validator
 from backend.agents.researcher.models import ResearchResult
 
@@ -27,6 +27,15 @@ class StrategyResult(BaseModel):
     """
     agent: Literal["strategist"] = "strategist"
     status: Literal["completed", "failed"] = "completed"
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.lower().strip() in ("strategist", "strategist agent"):
+            return "strategist"
+        return v
+
+
     strategy: str = Field(default="", description="High-level practical strategic thesis and direction")
     priorities: list[str] = Field(
         default_factory=list,

@@ -6,6 +6,7 @@ and provenance attribution behind the InformationSource contract.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 
@@ -58,11 +59,19 @@ class WebAcquisitionSource(BaseInformationSource):
         if not cleaned_query:
             return []
 
-        logger.info(f"WebAcquisitionSource: searching for '{cleaned_query[:60]}...'")
+        import re
+        search_query = cleaned_query
+        conv_prefix = r"^(i need to build|i need to|i want to build|i want to|how do i build|how to build|give me an?|can you give me an?|what is the plan for|please explain|tell me about)\s+"
+        ref_query = re.sub(conv_prefix, "", search_query, flags=re.IGNORECASE).strip()
+        ref_query = re.sub(r"\b(give me the implementation plan for this|for this|give me a plan for this)\b", "implementation plan architecture", ref_query, flags=re.IGNORECASE).strip()
+        if len(ref_query) >= 3:
+            search_query = ref_query
+
+        logger.info(f"WebAcquisitionSource: searching for '{search_query[:60]}...'")
 
         try:
             search_results: List[SearchResult] = await self.search_provider.search(
-                query=cleaned_query,
+                query=search_query,
                 max_results=self.max_results,
             )
         except Exception as e:
@@ -73,10 +82,10 @@ class WebAcquisitionSource(BaseInformationSource):
 
         items: List[InformationItem] = []
 
-        for sr in search_results:
+        async def _process_result(sr: SearchResult) -> Optional[InformationItem]:
             target_url = sr.url
             if not target_url:
-                continue
+                return None
 
             try:
                 # 1. Fetch
@@ -85,7 +94,7 @@ class WebAcquisitionSource(BaseInformationSource):
                     err_note = f"Failed to fetch '{target_url}': {fetch_res.error or 'Unknown error'}"
                     self.last_errors.append(err_note)
                     logger.warning(f"WebAcquisitionSource: {err_note}")
-                    continue
+                    return None
 
                 # 2. Extract
                 extracted = self.extractor.extract(fetch_res.html, fallback_url=target_url)
@@ -95,16 +104,16 @@ class WebAcquisitionSource(BaseInformationSource):
                         raw_text = f"Overview: {sr.snippet}"
                     else:
                         self.last_errors.append(f"Empty readable content from '{target_url}'.")
-                        continue
+                        return None
 
                 # 3. Clean
                 cleaned_text = self.cleaner.clean(raw_text)
                 if not cleaned_text:
                     self.last_errors.append(f"Cleaned content empty from '{target_url}'.")
-                    continue
+                    return None
 
                 # 4. Attach Provenance
-                item = build_information_item(
+                return build_information_item(
                     content=cleaned_text,
                     title=extracted.title or sr.title,
                     url=target_url,
@@ -112,13 +121,36 @@ class WebAcquisitionSource(BaseInformationSource):
                     status_code=fetch_res.status_code,
                     metadata={"snippet": sr.snippet},
                 )
-                items.append(item)
 
             except Exception as e:
                 err_note = f"Error processing web page '{target_url}': {type(e).__name__}"
                 self.last_errors.append(err_note)
                 logger.warning(f"WebAcquisitionSource: {err_note}")
-                continue
+                return None
+
+        tasks = [_process_result(sr) for sr in search_results if sr.url]
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, InformationItem):
+                    items.append(res)
+
+        # If all full page fetches failed (e.g. 403 Forbidden on dictionary/firewall sites),
+        # use the search snippets so empirical evidence is never lost.
+        if not items and search_results:
+            logger.info("WebAcquisitionSource: All page fetches failed, using search result snippets.")
+            for sr in search_results:
+                if sr.snippet and len(sr.snippet.strip()) >= 15:
+                    items.append(
+                        build_information_item(
+                            content=self.cleaner.clean(f"Search Overview: {sr.snippet}"),
+                            title=sr.title,
+                            url=sr.url,
+                            query=cleaned_query,
+                            status_code=200,
+                            metadata={"snippet": sr.snippet, "fallback_snippet": True},
+                        )
+                    )
 
         return items
 

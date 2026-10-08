@@ -37,6 +37,15 @@ class ResearchResult(BaseModel):
     """
     agent: Literal["researcher"] = "researcher"
     status: Literal["completed", "failed"] = "completed"
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.lower().strip() in ("researcher", "researcher agent"):
+            return "researcher"
+        return v
+
+
     key_findings: list[str] = Field(
         default_factory=list,
         description="Core observations and factual findings derived from the problem and provided information"
