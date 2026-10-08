@@ -78,7 +78,7 @@ def is_wake_word_present(text: str) -> bool:
 def play_audio(audio_path: Path) -> None:
     """Play audio (MP3 or WAV) aloud through computer speakers using native Windows APIs."""
     audio_path = audio_path.resolve()
-    print("[Audio] Speaking aloud through system speakers...")
+    print("🔊 Speaking aloud through system speakers...")
 
     try:
         header = audio_path.read_bytes()[:4]
@@ -149,16 +149,16 @@ def record_microphone(duration: int = 7, samplerate: int = 16000) -> bytes:
     print("           CHAI VOICE WAKE-UP & TTS TEST            ")
     print("=" * 60)
     print(f"Using input device: {dev_name}")
-    print(f"[Mic] Recording {duration}s of audio... Speak now! (e.g. 'Welcome back CHAI')")
-    
+    print(f"🎤 Recording {duration}s of audio... Speak now! (e.g. 'Welcome back CHAI')")
+
     audio = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype="int16")
     sd.wait()
     peak = int(np.max(np.abs(audio)))
     peak_pct = (peak / 32767.0) * 100.0
     print(f"Recording complete (audio peak level: {peak_pct:.1f}%).")
-    
+
     if peak < 300:
-        print("[Notice] Very low volume detected. Check if your microphone is unmuted.")
+        print("⚠️ Very low volume detected. Check if your microphone is unmuted.")
     return audio.tobytes()
 
 
@@ -171,7 +171,7 @@ async def wake_up_and_speak(spoken_text: str, detected_language: str = "en") -> 
     reply_text = RESPONSES.get(lang, RESPONSES["en"])
 
     print("\n" + "=" * 60)
-    print("***** [WAKE-UP EVENT TRIGGERED] *****")
+    print("✨ 🌟 [WAKE-UP EVENT TRIGGERED] 🌟 ✨")
     print("=" * 60)
     print(f"Spoken User Input: '{spoken_text}'")
     print(f"Detected Language: {lang}")
@@ -190,36 +190,6 @@ async def wake_up_and_speak(spoken_text: str, detected_language: str = "en") -> 
 async def main() -> None:
     stt = STTService()
     args = sys.argv[1:]
-
-    # Server mode via running FastAPI server
-    if "--server" in args or "-srv" in args or "--api" in args:
-        import urllib.request
-        import urllib.parse
-        import json
-        query_text = " ".join([a for a in args if a not in ("--server", "-srv", "--api")]).strip() or "What is artificial intelligence and how does CHAI work?"
-        print(f"\n[ServerMode] Transmitting voice query to FastAPI server multi-agent reasoning API: '{query_text}'")
-        try:
-            req_data = json.dumps({"problem": query_text, "language": "en"}).encode("utf-8")
-            req = urllib.request.Request(
-                "http://localhost:8000/api/solve",
-                data=req_data,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                res_json = json.loads(resp.read().decode("utf-8"))
-                ans = res_json.get("final_synthesized_answer") or "Multi-agent coordination completed successfully."
-                encoded_ans = urllib.parse.quote(ans[:300])
-                audio_url = f"http://localhost:8000/api/voice/synthesize?text={encoded_ans}&language=en"
-                print("\n================ SERVER MULTI-AGENT RESPONSE ================")
-                print("Status: 200 OK (Server Coordinated)")
-                print(f"Selected Agents: {res_json.get('selected_agents', ['coordinator', 'researcher', 'synthesizer'])}")
-                print(f"Synthesized Agent Answer:\n{ans}\n")
-                print(f"Server Audio Stream URL: {audio_url}")
-                print("============================================================\n")
-                return
-        except Exception as e:
-            print(f"[ServerMode Error]: Could not communicate with server: {e}")
-            return
 
     # Simulation mode
     if "--simulate" in args or "-s" in args:

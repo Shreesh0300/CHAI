@@ -7,7 +7,7 @@ IMPORTANT:
 - Provider-specific SDKs will be added in the implementation phase.
 """
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 
@@ -18,9 +18,6 @@ class VoiceSettings(BaseSettings):
     stt_provider: str = ""
     stt_api_key: str = ""
     stt_api_url: str = ""
-
-    # --- Shared Voice / Speech Key ---
-    speech_api_key: str = ""
 
     # --- Gemini API Key fallback ---
     gemini_api_key: str = ""
@@ -35,9 +32,7 @@ class VoiceSettings(BaseSettings):
     supported_languages: List[str] = ["en"]
     default_voice: str = "default"
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 def get_voice_settings() -> VoiceSettings:

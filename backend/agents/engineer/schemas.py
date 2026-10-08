@@ -15,9 +15,9 @@ Design principles:
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -44,10 +44,17 @@ class ArchitectureLayer(BaseModel):
 
 class ArchitectureDesign(BaseModel):
     """Overall system architecture description."""
-    overview: str = Field(..., description="High-level architecture summary.")
+    overview: str = Field(default="Architecture overview", description="High-level architecture summary.")
     pattern: Optional[str] = Field(None, description="Architecture pattern (e.g. 'Layered', 'Microservices', 'Serverless').")
     layers: List[ArchitectureLayer] = Field(default_factory=list, description="Architecture layers/tiers.")
     relationships: List[str] = Field(default_factory=list, description="Key relationships between components.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_overview(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("overview"):
+            data["overview"] = data.get("summary") or data.get("description") or data.get("pattern") or "Architecture overview"
+        return data
 
 
 class TechnologyRecommendation(BaseModel):
@@ -84,17 +91,24 @@ class DatabaseEntity(BaseModel):
 
 class DatabaseDesign(BaseModel):
     """Architecture-level database/storage design."""
-    overview: str = Field(..., description="Storage strategy summary.")
+    overview: str = Field(default="Database design overview", description="Storage strategy summary.")
     storage_type: Optional[str] = Field(None, description="Primary storage type (SQL, NoSQL, file, etc.).")
     entities: List[DatabaseEntity] = Field(default_factory=list, description="Important entities.")
     indexing_considerations: List[str] = Field(default_factory=list, description="Indexing notes.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_overview(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("overview"):
+            data["overview"] = data.get("summary") or data.get("description") or data.get("storage_type") or "Database design overview"
+        return data
 
 
 class AIMLDesign(BaseModel):
     """AI/ML architecture when applicable."""
     model_config = {"protected_namespaces": ()}
 
-    overview: str = Field(..., description="AI/ML role in the system.")
+    overview: str = Field(default="AI/ML architecture overview", description="AI/ML role in the system.")
     model_role: Optional[str] = Field(None, description="What the model does.")
     inference_flow: Optional[str] = Field(None, description="How inference is performed.")
     model_selection: Optional[str] = Field(None, description="Model selection considerations.")
@@ -102,6 +116,19 @@ class AIMLDesign(BaseModel):
     rag_design: Optional[str] = Field(None, description="RAG architecture if applicable.")
     evaluation: Optional[str] = Field(None, description="Evaluation requirements.")
     latency_cost: Optional[str] = Field(None, description="Latency and cost considerations.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_overview(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("overview"):
+            data["overview"] = (
+                data.get("model_role")
+                or data.get("role")
+                or data.get("description")
+                or data.get("summary")
+                or "AI/ML architecture overview"
+            )
+        return data
 
 
 class TechnicalRisk(BaseModel):
@@ -128,14 +155,28 @@ class ImplementationPhase(BaseModel):
 
 class ScalabilityDesign(BaseModel):
     """Scalability considerations."""
-    overview: str = Field(..., description="Scalability strategy summary.")
+    overview: str = Field(default="Scalability overview", description="Scalability strategy summary.")
     considerations: List[str] = Field(default_factory=list, description="Key scalability points.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_overview(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("overview"):
+            data["overview"] = data.get("summary") or data.get("description") or "Scalability overview"
+        return data
 
 
 class PerformanceDesign(BaseModel):
     """Performance considerations."""
-    overview: str = Field(..., description="Performance strategy summary.")
+    overview: str = Field(default="Performance overview", description="Performance strategy summary.")
     considerations: List[str] = Field(default_factory=list, description="Key performance points.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_overview(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("overview"):
+            data["overview"] = data.get("summary") or data.get("description") or "Performance overview"
+        return data
 
 
 # ---------------------------------------------------------------------------

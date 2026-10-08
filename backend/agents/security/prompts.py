@@ -71,8 +71,14 @@ def build_security_prompt(
         f"PROBLEM STATEMENT TO EVALUATE:\n{problem.strip()}\n"
     ]
 
-    if context and context.strip():
-        prompt_lines.append(f"DOMAIN CONTEXT & BACKGROUND:\n{context.strip()}\n")
+    if context:
+        if isinstance(context, dict):
+            import json
+            context_str = json.dumps(context, default=str)
+        else:
+            context_str = str(context).strip()
+        if context_str:
+            prompt_lines.append(f"DOMAIN CONTEXT & BACKGROUND:\n{context_str}\n")
 
     # Upstream Research Context
     if research:

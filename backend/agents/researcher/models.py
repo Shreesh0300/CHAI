@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Any
+from typing import Literal, Optional, Any, Union, Dict, List
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -18,7 +18,7 @@ class ResearchInput(BaseModel):
     Validates that problem statement is non-empty.
     """
     problem: str = Field(description="User problem statement or requirements to investigate")
-    context: Optional[str] = Field(default=None, description="Optional domain or contextual background")
+    context: Optional[Union[str, Dict[str, Any], Any]] = Field(default=None, description="Optional domain or contextual background")
     acquired_information: list[Any] = Field(default_factory=list, description="Pre-acquired evidence or records")
     sources: list[Source] = Field(default_factory=list, description="Explicit sources provided to the agent")
 
@@ -35,8 +35,17 @@ class ResearchResult(BaseModel):
     Strict output contract for the Researcher Agent.
     Encapsulates problem analysis without designing downstream solutions.
     """
-    agent: str = Field(default="researcher", description="Agent identifier")
-    status: str = Field(default="completed", description="Execution status")
+    agent: Literal["researcher"] = "researcher"
+    status: Literal["completed", "failed"] = "completed"
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.lower().strip() in ("researcher", "researcher agent"):
+            return "researcher"
+        return v
+
+
     key_findings: list[str] = Field(
         default_factory=list,
         description="Core observations and factual findings derived from the problem and provided information"

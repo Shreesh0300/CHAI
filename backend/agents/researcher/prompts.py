@@ -54,8 +54,11 @@ def build_research_prompt(
         f"PROBLEM STATEMENT TO ANALYZE:\n{problem.strip()}\n"
     ]
 
-    if context and context.strip():
-        prompt_parts.append(f"DOMAIN CONTEXT & BACKGROUND:\n{context.strip()}\n")
+    if context:
+        import json
+        context_str = json.dumps(context) if isinstance(context, dict) else str(context)
+        if context_str.strip():
+            prompt_parts.append(f"DOMAIN CONTEXT & BACKGROUND:\n{context_str.strip()}\n")
 
     if acquired_information:
         info_lines = []

@@ -66,12 +66,12 @@ def canonicalize_language(lang_input: Optional[str]) -> Optional[str]:
 def detect_language(text: Optional[str]) -> LanguageDetectionResult:
     """
     Detects whether the input text is Kannada ('kn'), Hindi ('hi'), or English ('en').
-    
+
     Uses Unicode script boundaries for 100% deterministic, instant script classification:
       - Kannada block: U+0C80 - U+0CFF
       - Devanagari block (Hindi): U+0900 - U+097F
       - Latin/ASCII (English): a-zA-Z
-    
+
     Falls back safely to 'en' with confidence=None if text is empty or ambiguous.
     """
     if not text or not text.strip():

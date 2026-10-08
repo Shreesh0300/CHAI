@@ -1,3 +1,4 @@
+import os
 import json
 import re
 from typing import Optional, Any, Union
@@ -50,11 +51,34 @@ class StrategistAgent:
             logger.error(f"Failed to initialize Gemini LLM client: {e}")
             return None
 
+    def _make_mock_output(self, problem: str) -> StrategyResult:
+        """Returns a plausible mock StrategyResult when mock mode is enabled."""
+        return StrategyResult(
+            agent="strategist",
+            status="completed",
+            strategy=f"[Mock] Strategic thesis and operational direction for: {problem}",
+            priorities=[
+                "[Mock] Prioritize offline-capable workflows",
+                "[Mock] Establish reliable escalation channels",
+            ],
+            roadmap=[
+                "[Mock] Phase 1: Core workflow MVP",
+                "[Mock] Phase 2: Pilot testing and validation",
+            ],
+            tradeoffs=[
+                "[Mock] Prioritize connectivity resilience over real-time analytics",
+            ],
+            success_metrics=[
+                "[Mock] Offline operation completion rate > 95%",
+                "[Mock] User task success rate",
+            ],
+        )
+
     async def run(
         self,
         problem: str,
-        research: Union[ResearchResult, dict],
-        context: Optional[str] = None,
+        research: Optional[Union[ResearchResult, dict]] = None,
+        context: Optional[Union[str, dict]] = None,
     ) -> StrategyResult:
         """
         Executes the strategy synthesis workflow grounded in ResearchResult.
@@ -67,6 +91,10 @@ class StrategistAgent:
         Returns:
             StrategyResult with practical strategy and roadmap or status='failed'.
         """
+        # If research is not passed directly, attempt to pull it from context dict
+        if research is None and isinstance(context, dict):
+            research = context.get("researcher_output") or context.get("research")
+
         # 1. Validate ResearchResult presence and structure
         if research is None:
             logger.error("Missing ResearchResult: StrategistAgent requires structured research input.")
@@ -94,6 +122,11 @@ class StrategistAgent:
         except Exception as e:
             logger.error(f"Input validation failed for StrategistAgent: {e}")
             raise ValueError(f"Input validation failed: {e}")
+
+        # Check explicit mock mode
+        if os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes"):
+            logger.info("StrategistAgent: running in mock mode.")
+            return self._make_mock_output(problem)
 
         # 3. Obtain LLM client
         llm = self._get_llm()

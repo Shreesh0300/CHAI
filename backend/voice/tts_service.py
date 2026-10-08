@@ -18,12 +18,9 @@ logger = get_logger(__name__)
 logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
 
-DEFAULT_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 FALLBACK_TTS_MODELS = [
-    "gemini-3.8-flash-tts",
-    "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-flash-preview-tts",
-    "models/gemini-3.8-flash-lite-tts",
+    "gemini-3.8-flash-lite-tts",
 ]
 
 LANGUAGE_INSTRUCTIONS = {
@@ -49,11 +46,8 @@ class TTSService:
         """Safely resolve API key from voice settings, environment, or backend config."""
         api_key = (
             self.settings.tts_api_key
-            or getattr(self.settings, "speech_api_key", "")
-            or os.getenv("TTS_API_KEY", "")
-            or os.getenv("SPEECH_API_KEY", "")
-            or os.getenv("GEMINI_API_KEY_SPEECH", "")
             or getattr(self.settings, "gemini_api_key", "")
+            or os.getenv("TTS_API_KEY", "")
             or os.getenv("GEMINI_API_KEY", "")
         ).strip()
         if not api_key:
@@ -220,12 +214,13 @@ class TTSService:
             import urllib.request
             import urllib.parse
             encoded = urllib.parse.quote(text)
-            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={canon_lang}&client=tw-ob"
+            lang_code = "hi" if canon_lang == "sa" else canon_lang
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={lang_code}&client=tw-ob"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = resp.read()
             if len(data) > 100:
-                logger.info(f"Successfully synthesized audio using Google TTS fallback ({canon_lang}).")
+                logger.info(f"Successfully synthesized audio using Google TTS fallback ({canon_lang} via {lang_code}).")
                 return data
         except Exception as e:
             logger.debug(f"Google TTS fallback unavailable: {e}")

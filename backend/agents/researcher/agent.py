@@ -1,3 +1,4 @@
+import os
 import json
 import re
 from typing import Optional, List, Any, Union
@@ -49,6 +50,19 @@ class ResearcherAgent:
             logger.error(f"Failed to initialize Gemini LLM client: {e}")
             return None
 
+    def _make_mock_output(self, problem: str, sources: List[Source]) -> ResearchResult:
+        """Returns a plausible mock ResearchResult when mock mode is enabled."""
+        return ResearchResult(
+            agent="researcher",
+            status="completed",
+            key_findings=[f"[Mock] Core research findings for: {problem}"],
+            user_needs=["[Mock] Low-bandwidth accessibility", "[Mock] Reliable user experience"],
+            constraints=["[Mock] Unreliable connectivity", "[Mock] Limited device capabilities"],
+            assumptions=["[Mock] Mock mode active: no live LLM configured."],
+            open_questions=["[Mock] Target operational scope and language support."],
+            sources=sources,
+        )
+
     async def run(
         self,
         problem: str,
@@ -91,6 +105,11 @@ class ResearcherAgent:
         except Exception as e:
             logger.error(f"Input validation failed for ResearcherAgent: {e}")
             raise ValueError(f"Input validation failed: {e}")
+
+        # Check explicit mock mode
+        if os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes"):
+            logger.info("ResearcherAgent: running in mock mode.")
+            return self._make_mock_output(problem, parsed_sources)
 
         # 3. Obtain LLM client
         llm = self._get_llm()

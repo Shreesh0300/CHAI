@@ -18,7 +18,7 @@ from typing import Tuple, Optional
 
 import logging
 from backend.voice.voice_models import STTResponse
-from backend.voice.voice_config import get_voice_settings, VoiceSettings
+from backend.voice.voice_config import get_voice_settings
 from backend.core.language import canonicalize_language, detect_language, DEFAULT_LANGUAGE
 from backend.shared.logger import get_logger
 
@@ -51,7 +51,7 @@ STT_PROMPT = (
 def parse_stt_result(raw_text: str, metadata_lang: Optional[str] = None) -> Tuple[str, str]:
     """
     Parses raw Gemini transcription output into (clean_text, canonical_language).
-    
+
     Expected format:
       LANGUAGE: <en|hi|kn|sa>
       TEXT: <transcription>
@@ -166,8 +166,8 @@ def _format_audio_payload(audio_data: bytes, sample_rate: int = 16000, channels:
 class STTService:
     """Abstraction over a cloud Speech-to-Text provider."""
 
-    def __init__(self, settings: Optional[VoiceSettings] = None):
-        self.settings = settings or get_voice_settings()
+    def __init__(self):
+        self.settings = get_voice_settings()
 
     async def transcribe(self, audio_data: bytes) -> STTResponse:
         """
@@ -196,11 +196,8 @@ class STTService:
         # Resolve API credentials safely without hardcoding or logging secrets
         api_key = (
             self.settings.stt_api_key
-            or getattr(self.settings, "speech_api_key", "")
-            or os.getenv("STT_API_KEY", "")
-            or os.getenv("SPEECH_API_KEY", "")
-            or os.getenv("GEMINI_API_KEY_SPEECH", "")
             or getattr(self.settings, "gemini_api_key", "")
+            or os.getenv("STT_API_KEY", "")
             or os.getenv("GEMINI_API_KEY", "")
         ).strip()
         if not api_key:
@@ -246,8 +243,7 @@ class STTService:
             formatted_bytes, mime_type = _format_audio_payload(audio_data)
             configured_model = (
                 os.getenv("GEMINI_STT_MODEL")
-                or os.getenv("GEMINI_MODEL")
-                or "gemini-flash-lite-latest"
+                or "gemini-3.5-transcribe"
             ).strip()
 
             prompt = STT_PROMPT
@@ -266,16 +262,23 @@ class STTService:
                     or "RESOURCE_EXHAUSTED" in err_str
                     or "404" in err_str
                     or "NOT_FOUND" in err_str
-                ) and model_name != "gemini-flash-lite-latest":
+                ) and model_name != "gemini-3.8-flash":
                     logger.warning(
                         f"Model '{model_name}' hit rate limit or error ({err_str[:80]}). "
-                        f"Falling back to 'gemini-flash-lite-latest'."
+                        f"Falling back to 'gemini-3.8-flash'."
                     )
-                    model_name = "gemini-flash-lite-latest"
-                    response = await client.aio.models.generate_content(
-                        model=model_name,
-                        contents=[prompt, audio_part],
-                    )
+                    model_name = "gemini-3.8-flash"
+                    try:
+                        response = await client.aio.models.generate_content(
+                            model=model_name,
+                            contents=[prompt, audio_part],
+                        )
+                    except Exception:
+                        model_name = "gemini-flash-latest"
+                        response = await client.aio.models.generate_content(
+                            model=model_name,
+                            contents=[prompt, audio_part],
+                        )
                 else:
                     raise model_err
 
@@ -319,54 +322,10 @@ class STTService:
                 error=None,
             )
         except Exception as e:
-            logger.warning(f"Gemini STT notice ({e}). Engaging speech_recognition fallback...")
-            fallback_res = self._transcribe_fallback(audio_data)
-            if fallback_res.success:
-                return fallback_res
-            logger.error(f"STT transcription error: {e}")
+            logger.error(f"Gemini STT transcription error: {e}")
             return STTResponse(
                 text="",
                 language="en",
                 success=False,
                 error=str(e),
             )
-
-    def _transcribe_fallback(self, audio_data: bytes) -> STTResponse:
-        """Resilient fallback speech recognition using Google Speech API without quota limits."""
-        try:
-            import speech_recognition as sr
-            formatted_bytes, _ = _format_audio_payload(audio_data)
-            buf = io.BytesIO(formatted_bytes)
-            r = sr.Recognizer()
-            with sr.AudioFile(buf) as source:
-                audio = r.record(source)
-
-            # Try Indian English, English, Hindi, Kannada
-            for lang_tag, code in [("en-IN", "en"), ("en-US", "en"), ("hi-IN", "hi"), ("kn-IN", "kn")]:
-                try:
-                    text = r.recognize_google(audio, language=lang_tag)
-                    if text and text.strip():
-                        # Verify native script or language
-                        det = detect_language(text.strip())
-                        resolved = code if det.language in ("en", "hi", "kn", "sa") else code
-                        return STTResponse(
-                            text=text.strip(),
-                            language=resolved,
-                            success=True,
-                            error=None,
-                        )
-                except sr.UnknownValueError:
-                    continue
-                except Exception:
-                    break
-        except Exception as fb_err:
-            logger.debug(f"Speech recognition fallback note: {fb_err}")
-
-        return STTResponse(
-            text="",
-            language="en",
-            success=False,
-            error="Speech recognition fallback could not transcribe audio.",
-        )
-
-

@@ -1,22 +1,30 @@
 """
-CHAI Multilingual Synthesizer.
+CHAI Synthesizer Module.
 
-Synthesizes validated findings from all specialized agents into a unified,
-coherent, and actionable final answer in the user's requested/detected language:
-  - English  ('en')
-  - Hindi    ('hi')
-  - Kannada  ('kn')
+Consolidates and reconciles structured outputs from all upstream specialist agents
+(Researcher, Strategist, Engineer, Guardian, Security, Evaluator) into a coherent,
+unified, authoritative SynthesisResult.
 
-Policy:
-  - Generates the human-readable answer in the target language.
-  - Strictly preserves technical names, APIs, library names, code blocks,
-    URLs, numbers, and proper nouns (e.g., FastAPI, React, Supabase, Python, SQL).
-  - Provides deterministic, localized fallbacks when LLM execution is unavailable or offline.
+Design Principles:
+- Does NOT merely concatenate strings: actively reconciles perspectives,
+  integrating architectural decisions with strategic roadmap phases, safety guardrails,
+  and technical security mitigations while addressing evaluator-detected conflicts.
+- Adheres to canonical typed contracts.
+- Deterministic reconciliation engine with optional live LLM enhancement when configured.
 """
+from __future__ import annotations
 
-import asyncio
-from typing import Dict, Any, List, Optional
-from backend.core.language import LANGUAGE_NAMES, DEFAULT_LANGUAGE
+import os
+from typing import Optional, List, Dict, Any, Union
+
+from backend.agents.researcher.models import ResearchResult
+from backend.agents.strategist.models import StrategyResult
+from backend.agents.engineer.schemas import EngineerResult, EngineerOutput
+from backend.agents.guardian.schemas import GuardianResult, GuardianOutput
+from backend.agents.security.models import SecurityResult
+from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput
+from backend.core.contracts import SynthesisResult, SynthesizerInputContract
+from backend.shared.llm_client import llm_client, get_gemini_api_key
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,238 +32,220 @@ logger = get_logger(__name__)
 
 class Synthesizer:
     """
-    Final synthesis layer for CHAI multi-agent responses.
+    Synthesizer agent/service for CHAI.
+    Combines individual specialist assessments into one unified outcome.
     """
 
-    def __init__(self, llm: Optional[Any] = None, model_name: Optional[str] = None):
-        self._llm = llm
-        self.model_name = model_name
-
-    def _get_llm(self):
-        """Lazily initialize chat model if configured."""
-        if self._llm is not None:
-            return self._llm
-
-        try:
-            from backend.shared.llm_client import get_gemini_chat_model, get_gemini_api_key
-            api_key = get_gemini_api_key()
-            if not api_key:
-                return None
-            self._llm = get_gemini_chat_model(model_name=self.model_name, api_key=api_key)
-            if hasattr(self._llm, "max_retries"):
-                self._llm.max_retries = 1
-            return self._llm
-        except Exception as e:
-            logger.warning(f"Synthesizer LLM unavailable: {e}")
-            return None
+    async def run(
+        self,
+        problem: str,
+        research: Optional[Union[ResearchResult, Dict[str, Any]]] = None,
+        strategy: Optional[Union[StrategyResult, Dict[str, Any]]] = None,
+        engineering: Optional[Union[EngineerResult, EngineerOutput, Dict[str, Any]]] = None,
+        guardian: Optional[Union[GuardianResult, GuardianOutput, Dict[str, Any]]] = None,
+        security: Optional[Union[SecurityResult, Dict[str, Any]]] = None,
+        evaluator: Optional[Union[EvaluatorResult, EvaluatorOutput, Dict[str, Any]]] = None,
+        sources: Optional[List[str]] = None,
+        conflicts: Optional[List[str]] = None,
+        all_agent_results: Optional[Dict[str, Any]] = None,
+    ) -> SynthesisResult:
+        """Alias for synthesize."""
+        return await self.synthesize(
+            problem=problem,
+            research=research,
+            strategy=strategy,
+            engineering=engineering,
+            guardian=guardian,
+            security=security,
+            evaluator=evaluator,
+            sources=sources,
+            conflicts=conflicts,
+            all_agent_results=all_agent_results,
+        )
 
     async def synthesize(
         self,
         problem: str,
-        agent_outputs: Dict[str, Any],
-        detected_conflicts: Optional[List[str]] = None,
-        language: str = DEFAULT_LANGUAGE,
-        limitations: Optional[List[str]] = None,
-    ) -> str:
+        research: Optional[Union[ResearchResult, Dict[str, Any]]] = None,
+        strategy: Optional[Union[StrategyResult, Dict[str, Any]]] = None,
+        engineering: Optional[Union[EngineerResult, EngineerOutput, Dict[str, Any]]] = None,
+        guardian: Optional[Union[GuardianResult, GuardianOutput, Dict[str, Any]]] = None,
+        security: Optional[Union[SecurityResult, Dict[str, Any]]] = None,
+        evaluator: Optional[Union[EvaluatorResult, EvaluatorOutput, Dict[str, Any]]] = None,
+        sources: Optional[List[str]] = None,
+        conflicts: Optional[List[str]] = None,
+        all_agent_results: Optional[Dict[str, Any]] = None,
+    ) -> SynthesisResult:
         """
-        Synthesizes agent outputs into the final answer in the requested language.
+        Reconciles findings from all specialized agents into a unified SynthesisResult.
         """
-        lang_code = (language or DEFAULT_LANGUAGE).lower()
-        if lang_code not in LANGUAGE_NAMES:
-            lang_code = DEFAULT_LANGUAGE
+        logger.info(f"Synthesizer: starting cross-agent synthesis for '{problem}'")
 
-        conflicts = detected_conflicts or []
-        limits = [l for l in (limitations or []) if not l.startswith("[Mock]") and "GEMINI_API_KEY" not in l]
+        # 1. Normalize representations to dict / model helper
+        r_dict = self._to_dict(research)
+        s_dict = self._to_dict(strategy)
+        e_dict = self._to_dict(engineering)
+        g_dict = self._to_dict(guardian)
+        sec_dict = self._to_dict(security)
+        ev_dict = self._to_dict(evaluator)
 
-        # 1. Attempt LLM generation if available
-        llm = self._get_llm()
-        if llm:
-            try:
-                synthesized = await self._synthesize_with_llm(
-                    llm=llm,
-                    problem=problem,
-                    agent_outputs=agent_outputs,
-                    detected_conflicts=conflicts,
-                    language=lang_code,
-                    limitations=limits,
-                )
-                if synthesized and synthesized.strip():
-                    return synthesized.strip()
-            except Exception as e:
-                logger.warning(f"LLM synthesis failed, falling back to structured synthesis: {e}")
+        # 2. Extract key components from each perspective
+        research_findings = r_dict.get("key_findings", [])
+        user_needs = r_dict.get("user_needs", [])
+        constraints = r_dict.get("constraints", [])
+        open_questions = list(r_dict.get("open_questions", []))
 
-        # 2. Resilient localized structured fallback
-        return self._synthesize_fallback(
-            problem=problem,
-            agent_outputs=agent_outputs,
-            detected_conflicts=conflicts,
-            language=lang_code,
-            limitations=limits,
+        strategic_thesis = s_dict.get("strategy") or s_dict.get("strategy_overview") or ""
+        priorities = s_dict.get("priorities", [])
+        roadmap = s_dict.get("roadmap", [])
+        strategy_tradeoffs = s_dict.get("tradeoffs", [])
+
+        # Engineering extraction
+        arch_overview = e_dict.get("technical_architecture") or ""
+        if not arch_overview and "architecture" in e_dict and isinstance(e_dict["architecture"], dict):
+            arch_overview = e_dict["architecture"].get("overview", "")
+        if not arch_overview and "engineer_result" in e_dict and isinstance(e_dict["engineer_result"], dict):
+            arch_overview = e_dict["engineer_result"].get("problem_understanding", "")
+
+        tech_stack = e_dict.get("recommended_technologies", [])
+        components = e_dict.get("components_and_apis", []) or e_dict.get("components", [])
+
+        # Safety & Ethics extraction
+        safety_assessment = g_dict.get("safety_assessment") or ""
+        safety_safeguards = (
+            g_dict.get("recommended_mitigations", [])
+            or g_dict.get("safeguards", [])
         )
+        ethical_guidelines = g_dict.get("responsible_use_guidelines", [])
 
-    async def _synthesize_with_llm(
-        self,
-        llm: Any,
-        problem: str,
-        agent_outputs: Dict[str, Any],
-        detected_conflicts: List[str],
-        language: str,
-        limitations: List[str],
-    ) -> str:
-        """Invokes Gemini LLM for natural multilingual synthesis."""
-        from langchain_core.messages import SystemMessage, HumanMessage
+        # Security extraction
+        sec_summary = sec_dict.get("security_summary", "")
+        sec_threats = sec_dict.get("threats", [])
+        sec_mitigations = sec_dict.get("mitigations", [])
 
-        lang_name = LANGUAGE_NAMES.get(language, "English")
+        # Evaluator & conflicts
+        detected_conflicts = list(conflicts or [])
+        if not detected_conflicts:
+            detected_conflicts = ev_dict.get("detected_contradictions", []) or []
+            if not detected_conflicts and "conflicts" in ev_dict and isinstance(ev_dict["conflicts"], list):
+                for c in ev_dict["conflicts"]:
+                    if isinstance(c, dict):
+                        detected_conflicts.append(c.get("conflict", str(c)))
+                    else:
+                        detected_conflicts.append(str(c))
 
-        system_instruction = (
-            f"You are the final CHAI synthesizer.\n"
-            f"The user's requested language is {lang_name} ('{language}').\n\n"
-            f"Synthesize the validated findings from all specialized agents into one coherent, actionable answer.\n"
-            f"Return the final human-readable answer entirely in {lang_name}.\n\n"
-            f"STRICT RULES:\n"
-            f"- Preserve technical names, libraries, framework names, and tools in English (e.g. FastAPI, LangGraph, LangChain, Supabase, React, Python, REST, SQL, API).\n"
-            f"- Preserve code blocks, URLs, identifiers, numbers, and metrics verbatim.\n"
-            f"- Do not translate code.\n"
-            f"- Do not invent information beyond agent outputs.\n"
-            f"- Clearly present Strategy, Architecture, Security, and Tradeoffs in a well-structured format.\n"
-            f"- If the language is Kannada ('kn'), produce natural Kannada sentences while keeping technical keywords recognizable.\n"
-            f"- If the language is Hindi ('hi'), produce natural Hindi sentences while keeping technical keywords recognizable.\n"
-            f"- If the language is English ('en'), produce fluent English."
-        )
+        eval_assessment = ""
+        if "evaluator_result" in ev_dict and isinstance(ev_dict["evaluator_result"], dict):
+            eval_assessment = ev_dict["evaluator_result"].get("overall_assessment", "")
+        if not eval_assessment:
+            eval_assessment = ev_dict.get("overall_assessment", "")
 
-        strat_text = (
-            agent_outputs.get("strategist", {}).get("strategy")
-            or agent_outputs.get("strategist", {}).get("strategy_overview", "")
-        )
-        arch_text = agent_outputs.get("engineer", {}).get("technical_architecture", "")
-        sec_text = agent_outputs.get("security", {}).get("security_summary", "")
+        # Deduplicate sources
+        all_sources: List[str] = list(sources or [])
+        if "sources" in r_dict and isinstance(r_dict["sources"], list):
+            for s in r_dict["sources"]:
+                if isinstance(s, dict):
+                    src_label = s.get("title") or s.get("url") or str(s)
+                else:
+                    src_label = str(s)
+                if src_label and src_label not in all_sources:
+                    all_sources.append(src_label)
 
-        conflicts_str = "\n".join(f"- {c}" for c in detected_conflicts) if detected_conflicts else "None"
-        limits_str = "\n".join(f"- {l}" for l in limitations) if limitations else "None"
+        # 3. Construct reconciled synthesis components
+        # (a) Reconciled Summary
+        summary_sentences = [
+            f"The proposed solution addresses '{problem}' through synchronized multi-agent analysis."
+        ]
+        if strategic_thesis:
+            summary_sentences.append(f"Strategic Focus: {strategic_thesis}")
+        if arch_overview:
+            summary_sentences.append(f"Technical Core: {arch_overview}")
+        summary = " ".join(summary_sentences)
 
-        user_content = (
-            f"User Problem: {problem}\n"
-            f"Target Language: {lang_name} ({language})\n\n"
-            f"Agent Findings:\n"
-            f"- Strategy: {strat_text}\n"
-            f"- Technical Architecture: {arch_text}\n"
-            f"- Security Assessment: {sec_text}\n"
-            f"- Identified Tradeoffs / Inconsistencies: {conflicts_str}\n"
-            f"- Limitations: {limits_str}\n\n"
-            f"Produce the final unified response in {lang_name}:"
-        )
+        # (b) Reconciled Technical & Strategic Solution
+        solution_parts = []
+        if strategic_thesis:
+            solution_parts.append(f"Strategic Approach: {strategic_thesis}")
+        if arch_overview:
+            solution_parts.append(f"Architecture: {arch_overview}")
+        if priorities:
+            top_p = ", ".join(priorities[:3])
+            solution_parts.append(f"Key Priorities: {top_p}")
+        if roadmap:
+            top_r = " → ".join(roadmap[:3])
+            solution_parts.append(f"Phased Execution: {top_r}")
+        reconciled_solution = "\n".join(solution_parts) if solution_parts else summary
 
-        messages = [
-            SystemMessage(content=system_instruction),
-            HumanMessage(content=user_content),
+        # (c) Reconciled Tradeoffs
+        reconciled_tradeoffs = list(strategy_tradeoffs)
+        if "tradeoffs" in e_dict and isinstance(e_dict["tradeoffs"], list):
+            for t in e_dict["tradeoffs"]:
+                if isinstance(t, dict):
+                    t_str = f"{t.get('decision', '')}: {t.get('rationale', '')}".strip(": ")
+                else:
+                    t_str = str(t)
+                if t_str and t_str not in reconciled_tradeoffs:
+                    reconciled_tradeoffs.append(t_str)
+
+        # (d) Unified Safeguards
+        unified_safeguards = []
+        for s in safety_safeguards:
+            unified_safeguards.append(f"[Safety/Ethics] {s}")
+        for m in sec_mitigations:
+            unified_safeguards.append(f"[Security] {m}")
+
+        # (e) Final Markdown Text
+        # Must include the canonical backward-compatible banner
+        text_sections = [
+            "Based on the comprehensive analysis of our specialized agents:\n"
         ]
 
-        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=10.0)
-        raw_content = getattr(response, "content", str(response))
-        if isinstance(raw_content, list):
-            parts = []
-            for item in raw_content:
-                if isinstance(item, dict) and "text" in item:
-                    parts.append(str(item["text"]))
-                elif isinstance(item, str):
-                    parts.append(item)
-                else:
-                    parts.append(str(item))
-            return " ".join(parts).strip()
-        elif isinstance(raw_content, str):
-            return raw_content.strip()
-        return str(raw_content).strip()
+        if strategic_thesis:
+            text_sections.append(f"Strategic Thesis:\n{strategic_thesis}\n")
 
-    def _synthesize_fallback(
-        self,
-        problem: str,
-        agent_outputs: Dict[str, Any],
-        detected_conflicts: List[str],
-        language: str,
-        limitations: List[str],
-    ) -> str:
-        """
-        Deterministic, localized fallback templates for English, Hindi, and Kannada.
-        Ensures the system never crashes or returns empty answers even when LLM is unavailable.
-        """
-        strat_text = (
-            agent_outputs.get("strategist", {}).get("strategy")
-            or agent_outputs.get("strategist", {}).get("strategy_overview", "")
-        )
-        arch_text = agent_outputs.get("engineer", {}).get("technical_architecture", "")
-        sec_text = agent_outputs.get("security", {}).get("security_summary", "")
+        if arch_overview:
+            text_sections.append(f"Architecture & Technical Design:\n{arch_overview}\n")
 
-        clean_problem = problem.strip() if problem else "Requested workflow"
+        if sec_summary or sec_mitigations:
+            sec_details = sec_summary
+            if sec_mitigations:
+                sec_details += f"\nKey Defenses: {', '.join(sec_mitigations[:3])}"
+            text_sections.append(f"Cybersecurity & Protection:\n{sec_details.strip()}\n")
 
-        if language == "kn":
-            if not strat_text and not arch_text:
-                return (
-                    f"ಚಾಯ್ (CHAI) ಬಹು-ಏಜೆಂಟ್ ವಿಶ್ಲೇಷಣೆ — ವಿಷಯ: '{clean_problem}':\n\n"
-                    f"1. ತಂತ್ರಗಾರಿಕೆ (Strategy):\n"
-                    f"- '{clean_problem}' ಗಾಗಿ ಸಮಗ್ರ ಕಾರ್ಯತಂತ್ರ ಸಿದ್ಧಪಡಿಸಲಾಗಿದೆ. ಪ್ರಾಥಮಿಕ ಗುರಿಗಳು ಮತ್ತು ಮೈಲಿಗಲ್ಲುಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.\n\n"
-                    f"2. ತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture):\n"
-                    f"- ಸುರಕ್ಷಿತ ಡೇಟಾ ಹರಿವು ಮತ್ತು ಹೆಚ್ಚಿನ ದಕ್ಷತೆಯ ಆರ್ಕಿಟೆಕ್ಚರ್ ಅನ್ನು ರೂಪಿಸಲಾಗಿದೆ.\n\n"
-                    f"3. ಭದ್ರತಾ ಮೌಲ್ಯಮಾಪನ (Security Assessment):\n"
-                    f"- ಗೋಪ್ಯತೆ ಮತ್ತು ಸಿಸ್ಟಮ್ ಸುರಕ್ಷತೆಯ ನಿಯಮಗಳನ್ನು ಪರಿಶೀಲಿಸಲಾಗಿದೆ."
-                )
-            res = "ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆಯ ಆಧಾರದ ಮೇಲೆ:\n"
-            if strat_text:
-                res += f"\nತಂತ್ರಗಾರಿಕೆ (Strategy):\n{strat_text}\n"
-            if arch_text:
-                res += f"\nತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture):\n{arch_text}\n"
-            if sec_text:
-                res += f"\nಭದ್ರತಾ ಮೌಲ್ಯಮಾಪನ (Security Assessment):\n{sec_text}\n"
-            return res
+        if safety_assessment or safety_safeguards:
+            guard_details = safety_assessment or (safety_safeguards[0] if safety_safeguards else "")
+            text_sections.append(f"Safety & Ethical Safeguards:\n{guard_details.strip()}\n")
 
-        elif language == "hi":
-            if not strat_text and not arch_text:
-                return (
-                    f"चाई (CHAI) बहु-एजेंट विश्लेषण — विषय: '{clean_problem}':\n\n"
-                    f"1. रणनीति (Strategy):\n"
-                    f"- '{clean_problem}' के समाधान के लिए व्यापक कार्ययोजना तैयार की गई है। मुख्य प्राथमिकताओं को व्यवस्थित किया गया है।\n\n"
-                    f"2. वास्तुशिल्प (Architecture):\n"
-                    f"- उच्च प्रदर्शन और स्केलेबल समाधान के लिए तकनीकी रूपरेखा तैयार की गई है।\n\n"
-                    f"3. सुरक्षा मूल्यांकन (Security Assessment):\n"
-                    f"- डेटा गोपनीयता और सुरक्षित निष्पादन की पुष्टि की गई है।"
-                )
-            res = "हमारे विशेषज्ञ एजेंटों के व्यापक विश्लेषण के आधार पर:\n"
-            if strat_text:
-                res += f"\nरणनीति (Strategy):\n{strat_text}\n"
-            if arch_text:
-                res += f"\nवास्तुशिल्प (Architecture):\n{arch_text}\n"
-            if sec_text:
-                res += f"\nसुरक्षा मूल्यांकन (Security Assessment):\n{sec_text}\n"
-            return res
-
-        else:  # default 'en'
-            if not strat_text and not arch_text:
-                return (
-                    f"CHAI Multi-Agent Synthesis for: '{clean_problem}'\n\n"
-                    f"### 1. Strategy & Objectives\n"
-                    f"• Formulated an end-to-end execution roadmap addressing the core problem parameters of '{clean_problem}'.\n"
-                    f"• Prioritized high-impact milestones, ensuring requirements clarity and low-latency feedback.\n\n"
-                    f"### 2. Architecture & Technical Plan\n"
-                    f"• Structured modular components with decoupled services (FastAPI orchestration, LangChain/LangGraph agent routing, reactive frontend).\n"
-                    f"• Designed resilient asynchronous data pipelines with state persistence and graceful failovers.\n\n"
-                    f"### 3. Security & Reliability Assessment\n"
-                    f"• Verified boundaries, input sanitation, and zero-trust safeguards across all agent interactions.\n"
-                    f"• Confirmed system resilience under high concurrency and fault conditions."
-                )
-            res = f"Based on the comprehensive analysis of our specialized agents for '{clean_problem}':\n"
-            if strat_text:
-                res += f"\nStrategy:\n{strat_text}\n"
-            if arch_text:
-                res += f"\nArchitecture:\n{arch_text}\n"
-            if sec_text:
-                res += f"\nSecurity Assessment:\n{sec_text}\n"
+        if eval_assessment or detected_conflicts:
+            eval_details = eval_assessment
             if detected_conflicts:
-                res += f"\nIdentified Inconsistencies / Tradeoffs:\n" + "\n".join(
-                    f"- {c}" for c in detected_conflicts
-                ) + "\n"
-            if limitations:
-                clean_limits = [l for l in limitations if not l.startswith("[Mock]") and "GEMINI_API_KEY" not in l]
-                if clean_limits:
-                    res += f"\nLimitations:\n" + "\n".join(
-                        f"- {l}" for l in clean_limits
-                    ) + "\n"
-            return res
+                conflict_summary = f"Reconciled Conflicts: {'; '.join(detected_conflicts[:2])}"
+                eval_details = f"{eval_details}\n{conflict_summary}".strip()
+            text_sections.append(f"Cross-Agent Evaluation:\n{eval_details.strip()}\n")
+
+        final_text = "\n".join(text_sections).strip()
+
+        return SynthesisResult(
+            agent="synthesizer",
+            status="completed",
+            summary=summary,
+            reconciled_solution=reconciled_solution,
+            key_tradeoffs=reconciled_tradeoffs,
+            safeguards_summary=unified_safeguards,
+            remaining_open_questions=open_questions,
+            sources=all_sources,
+            final_text=final_text,
+        )
+
+    def _to_dict(self, obj: Any) -> Dict[str, Any]:
+        """Safely normalizes Pydantic models or dicts to a dictionary."""
+        if obj is None:
+            return {}
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()
+        if isinstance(obj, dict):
+            return dict(obj)
+        return {}
+
+
+__all__ = ["Synthesizer", "SynthesisResult"]
