@@ -14,7 +14,7 @@ from backend.core.state import (
 
 
 RouteType = Literal["simple", "complex"]
-ComplexityType = Literal["low", "medium", "high"]
+ComplexityType = Literal["low", "medium", "high", "simple", "complex"]
 ExecutionStatus = Literal["pending", "running", "completed", "failed"]
 
 
@@ -24,6 +24,13 @@ class RouteDecision(BaseModel):
     complexity: ComplexityType = Field(..., description="Estimated query complexity ('low', 'medium', or 'high')")
     reasoning: str = Field(..., description="Deterministic rationale for route selection")
     required_agents: List[str] = Field(default_factory=list, description="Specialized agents required for this route")
+    confidence: float = Field(default=0.95, description="Confidence score for route decision (0.0 to 1.0)")
+    reasons: List[str] = Field(default_factory=list, description="Detailed criteria contributing to the decision")
+    domain: str = Field(default="general", description="Detected query domain")
+    requires_external_information: bool = Field(default=False, description="Whether query requires external data acquisition")
+    requires_multi_agent_reasoning: bool = Field(default=False, description="Whether coordinated multi-agent deliberation is needed")
+    requested_depth: Literal["brief", "normal", "deep"] = Field(default="normal", description="Requested depth of reasoning")
+
 
 
 class AgentExecutionStatus(BaseModel):

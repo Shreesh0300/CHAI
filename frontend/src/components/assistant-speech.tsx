@@ -296,7 +296,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         if (!res.ok) throw new Error("API solve endpoint offline")
 
         const data = await res.json()
-        const aiAnswer = data.final_synthesized_answer || "Task executed successfully across multi-agent nodes."
+        const aiAnswer = data.final_answer || data.final_synthesized_answer || "Task executed successfully across multi-agent nodes."
 
         const assistantEntry: TranscriptEntry = {
           id: `ai-${Date.now()}`,

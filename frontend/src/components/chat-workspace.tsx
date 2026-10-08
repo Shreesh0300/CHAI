@@ -240,7 +240,7 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
       .then(async (res) => {
         if (!res.ok) throw new Error("API error")
         const data = await res.json()
-        const content = data.final_synthesized_answer || createAssistantReply(prompt, nextLayout, isFollowUp)
+        const content = data.final_answer || data.final_synthesized_answer || createAssistantReply(prompt, nextLayout, isFollowUp)
         const assistantMessage: ChatMessage = {
           id: createId(),
           role: "assistant",
