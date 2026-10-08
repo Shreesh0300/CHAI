@@ -45,7 +45,17 @@ from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
 
-CANONICAL_AGENTS = ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]
+CANONICAL_AGENTS = [
+    "researcher",
+    "strategist",
+    "engineer",
+    "guardian",
+    "security",
+    "evaluator",
+    "conflict_resolver",
+    "synthesizer",
+    "reliability_monitor",
+]
 
 
 def _iso_now() -> str:
@@ -224,6 +234,12 @@ class CHAICoordinator:
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     "details": f"Acquired {len(acquired_info)} information items.",
                 })
+                agent_outputs["information_acquisition"] = {
+                    "agent": "information_acquisition",
+                    "status": "completed",
+                    "acquired_info": acquired_info,
+                    "retrieved_sources": retrieved_sources,
+                }
             except Exception as e:
                 logger.warning(f"Information Acquisition execution error: {e}")
                 execution_trace.append({
@@ -732,6 +748,7 @@ class CHAICoordinator:
 
                 cr_dump = cr_output.model_dump() if hasattr(cr_output, "model_dump") else dict(cr_output)
                 agent_outputs["conflict_resolver"] = cr_dump
+                register_agent_result(state, "conflict_resolver", cr_output)
                 status_val = getattr(cr_output, "status", None) or cr_dump.get("status")
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
@@ -793,6 +810,8 @@ class CHAICoordinator:
             context_for_synth = {
                 "all_outputs": agent_outputs,
                 "execution_statuses": execution_statuses,
+                "acquired_information": acquired_info,
+                "retrieved_sources": retrieved_sources,
             }
             try:
                 if hasattr(self.synthesizer, "synthesize"):
@@ -818,24 +837,37 @@ class CHAICoordinator:
                                 timestamp=_iso_now(),
                             )
                         )
+                    execution_trace.append({
+                        "agent": "synthesizer",
+                        "status": "completed",
+                        "timestamp": _iso_now(),
+                        "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+                    })
+                    final_answer = synth_dump.get("final_answer") or synth_dump.get("final_text") or synth_dump.get("reconciled_solution") or ""
                 else:
+                    synth_err = synth_dump.get("error") or "Synthesizer returned failed status"
                     if "synthesizer" in selected_agents:
                         execution_statuses.append(
                             AgentExecutionStatus(
                                 agent_name="synthesizer",
                                 status="failed",
-                                error="Synthesizer returned failed status",
+                                error=synth_err,
                                 duration_ms=round((time.monotonic() - t0) * 1000, 2),
                                 timestamp=_iso_now(),
                             )
                         )
-                execution_trace.append({
-                    "agent": "synthesizer",
-                    "status": "completed",
-                    "timestamp": _iso_now(),
-                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                })
-                final_answer = synth_dump.get("final_answer") or synth_dump.get("final_text") or synth_dump.get("reconciled_solution") or ""
+                    execution_trace.append({
+                        "agent": "synthesizer",
+                        "status": "failed",
+                        "timestamp": _iso_now(),
+                        "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+                        "error": synth_err,
+                    })
+                    final_answer = (
+                        "CHAI could not complete the final synthesis reliably for this request.\n\n"
+                        "Some specialist analysis was completed, but the final synthesis stage failed. "
+                        "The result has therefore been withheld rather than presenting an unverified answer."
+                    )
             except Exception as e:
                 logger.error(f"Synthesizer execution error: {e}")
                 if "synthesizer" in selected_agents:
@@ -855,7 +887,11 @@ class CHAICoordinator:
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     "error": str(e),
                 })
-                final_answer = ""
+                final_answer = (
+                    "CHAI could not complete the final synthesis reliably for this request.\n\n"
+                    "Some specialist analysis was completed, but the final synthesis stage failed. "
+                    "The result has therefore been withheld rather than presenting an unverified answer."
+                )
         else:
             if not selected_agents:
                 final_answer = f"Direct response provided for: {request.problem}"
@@ -896,7 +932,8 @@ class CHAICoordinator:
                         final_answer += f"- {desc}: Prefer {pref}. {reason}\n"
 
         if request.selected_agents is None and final_answer:
-            if not final_answer.startswith("Based on the comprehensive analysis"):
+            synth_is_success = (val_str.lower() in ("completed", "success") or "completed" in val_str.lower()) if should_run_synth else True
+            if synth_is_success and not final_answer.startswith("Based on the comprehensive analysis") and not final_answer.startswith("CHAI could not"):
                 final_answer = f"Based on the comprehensive analysis of our specialized agents:\n\n{final_answer}"
 
         if "synthesizer" not in agent_outputs and final_answer:
@@ -924,6 +961,7 @@ class CHAICoordinator:
 
                 rm_dump = rm_output.model_dump() if hasattr(rm_output, "model_dump") else dict(rm_output)
                 agent_outputs["reliability_monitor"] = rm_dump
+                register_agent_result(state, "reliability_monitor", rm_output)
                 status_val = getattr(rm_output, "status", None) or rm_dump.get("status")
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
@@ -1099,13 +1137,24 @@ class CHAICoordinator:
         else:
             logger.warning(f"Output validation failed: {val_errors}")
             err_reasons = "; ".join(val_errors) if val_errors else "Structural or operational validation failure"
-            final_deliverable = (
-                f"[DELIVERY BLOCKED] The generated response failed final delivery validation and cannot be delivered. "
-                f"Validation findings: {err_reasons}"
-            )
+            if any("Internal agent failure" in e for e in val_errors):
+                final_deliverable = (
+                    "CHAI could not complete the final synthesis reliably for this request.\n\n"
+                    "Some specialist analysis was completed, but the final synthesis stage failed. "
+                    "The result has therefore been withheld rather than presenting an unverified answer."
+                )
+            else:
+                final_deliverable = (
+                    f"[DELIVERY BLOCKED] The generated response failed final delivery validation and cannot be delivered. "
+                    f"Validation findings: {err_reasons}"
+                )
 
         # Determine overall request status semantics
-        if not is_valid_val:
+        total_count = len(selected_agents) if selected_agents else 0
+        success_count = sum(1 for s in execution_statuses if s.status.lower() in ("success", "completed"))
+        failure_count = sum(1 for s in execution_statuses if s.status.lower() in ("failed", "failure", "error"))
+
+        if not is_valid_val or (total_count > 0 and failure_count == total_count):
             overall_request_status = "failed"
         elif gate_blocked:
             overall_request_status = "blocked"

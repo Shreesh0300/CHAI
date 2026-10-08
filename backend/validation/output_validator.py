@@ -60,6 +60,23 @@ _RAW_OBJECT_PATTERNS = [
     re.compile(r"<function [a-zA-Z_][a-zA-Z0-9_.]* at 0x[0-9a-fA-F]+>"),
 ]
 
+# Internal failure and crash response signatures (prevents delivering internal backend errors)
+_INTERNAL_FAILURE_PATTERNS = [
+    re.compile(r"Synthesis could not be completed", re.IGNORECASE),
+    re.compile(r"Synthesizer Agent failed after \d+ attempts", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z]+Agent failed after \d+ attempts", re.IGNORECASE),
+    re.compile(r"\breturned failed status\b", re.IGNORECASE),
+    re.compile(r"LLM output is not valid JSON", re.IGNORECASE),
+    re.compile(r"\b(?:JSONDecodeError|Unterminated string|Invalid \\escape|Invalid control character)\b"),
+    re.compile(r"\b(?:json\.decoder\.JSONDecodeError)\b"),
+    re.compile(r"\b(?:pydantic_core\._pydantic_core\.ValidationError|\b\d+\s+validation errors? for\s+[A-Za-z0-9_]+)", re.IGNORECASE),
+    re.compile(r"\b(?:google\.api_core\.exceptions|ResourceExhausted|RESOURCE_EXHAUSTED)\b"),
+    re.compile(r"\b(?:Quota exceeded for quota metric|generativelanguage\.googleapis\.com)\b", re.IGNORECASE),
+    re.compile(r"\b(?:RateLimitError|APIConnectionError|InternalServerError)\b"),
+    re.compile(r"\b(?:429\s+Too\s+Many\s+Requests|500\s+Internal\s+Server\s+Error|503\s+Service\s+Unavailable)\b", re.IGNORECASE),
+    re.compile(r"\[Internal Error Trace Removed\]"),
+]
+
 
 class OutputValidationResult(ContractValidationResult):
     """Result of structural and operational validation."""
@@ -222,6 +239,13 @@ class OutputValidator:
                 traceback_detected = True
                 errors.append("Output contains an unhandled Python exception traceback / stack trace.")
                 sanitized = tb_pattern.sub("[Internal Error Trace Removed]", sanitized)
+                break
+
+        # Check for internal agent crash / provider error leakage
+        for fail_pattern in _INTERNAL_FAILURE_PATTERNS:
+            if fail_pattern.search(trimmed):
+                errors.append("Internal agent failure detected in delivered output.")
+                sanitized = fail_pattern.sub("[INTERNAL_FAILURE_REDACTED]", sanitized)
                 break
 
         # -------------------------------------------------------------

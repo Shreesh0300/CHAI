@@ -386,3 +386,58 @@ async def test_real_gemini_integration():
     assert len(result.attack_surfaces) > 0
     assert len(result.threats) > 0
     assert len(result.mitigations) > 0
+
+
+# ==============================================================================
+# 15. SEVERITY LEVELS NORMALIZATION REGRESSION TESTS
+# ==============================================================================
+
+def test_severity_levels_as_list():
+    """1. severity_levels as list[str] is accepted directly."""
+    res = SecurityResult(
+        security_summary="Test",
+        severity_levels=["Critical", "High", "Medium"],
+    )
+    assert res.severity_levels == ["Critical", "High", "Medium"]
+
+
+def test_severity_levels_as_dict():
+    """2. severity_levels as dict[str, str] is safely normalized preserving threat and severity."""
+    res = SecurityResult(
+        security_summary="Test",
+        severity_levels={
+            "IDOR / Broken Authorization": "High",
+            "Rate Limiting / API Abuse": "Medium",
+        },
+    )
+    assert len(res.severity_levels) == 2
+    assert "IDOR / Broken Authorization: High" in res.severity_levels
+    assert "Rate Limiting / API Abuse: Medium" in res.severity_levels
+
+
+def test_severity_levels_malformed_rejected():
+    """3. malformed severity_levels (e.g. non-coercible invalid types) raises validation error."""
+    with pytest.raises(Exception):
+        SecurityResult(
+            security_summary="Test",
+            severity_levels=12345,  # int not allowed
+        )
+
+    with pytest.raises(Exception):
+        SecurityResult(
+            security_summary="Test",
+            severity_levels=[object()],  # raw arbitrary object
+        )
+
+
+def test_severity_levels_empty_accepted():
+    """4. empty severity_levels (empty list, empty dict, or None) produces empty list."""
+    res_list = SecurityResult(security_summary="Test", severity_levels=[])
+    assert res_list.severity_levels == []
+
+    res_dict = SecurityResult(security_summary="Test", severity_levels={})
+    assert res_dict.severity_levels == []
+
+    res_none = SecurityResult(security_summary="Test", severity_levels=None)
+    assert res_none.severity_levels == []
+

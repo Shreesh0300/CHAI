@@ -37,9 +37,9 @@ logger = get_logger(__name__)
 _MAX_ATTEMPTS: int = 2
 
 # Maximum characters allowed for reference context. Synthesizer consumes multi-agent
-# output aggregates (Researcher, Strategist, Engineer, Guardian, Security, Evaluator),
-# so an allocation of 12,000 characters safely accommodates all multi-agent payloads.
-_MAX_CONTEXT_CHARS: int = 12000
+# output aggregates (Researcher, Strategist, Engineer, Guardian, Security, Evaluator, Conflict Resolver),
+# so an allocation of 60,000 characters safely accommodates all multi-agent payloads without truncation.
+_MAX_CONTEXT_CHARS: int = 60000
 
 _KNOWN_CHAI_AGENTS: Set[str] = {
     "researcher",
@@ -56,14 +56,14 @@ _KNOWN_CHAI_AGENTS: Set[str] = {
 def is_simple_query(problem: str) -> bool:
     """Detect simple informational queries that warrant concise direct answers."""
     p = problem.strip().lower()
+    if p in {"hello", "hi", "hey"}:
+        return True
     simple_patterns = [
         "what is a python list",
         "what is python list",
         "explain python list",
         "what is a list in python",
         "what is 2+2",
-        "hello",
-        "hi",
     ]
     return any(pattern in p for pattern in simple_patterns)
 
@@ -127,12 +127,20 @@ class SynthesizerAgent:
 
                 # Parse and validate
                 result = self._parse_response(response_text)
-                active_agents = self._get_active_agents(context)
-                result = self._sanitize_result(result, active_agents)
+                if result.status == AgentStatus.COMPLETED:
+                    active_agents = self._get_active_agents(context)
+                    result = self._sanitize_result(result, active_agents)
 
-                elapsed = time.monotonic() - start_time
-                logger.info(f"Synthesizer Agent: completed in {elapsed:.2f}s (attempt {attempt}).")
-                return result
+                    elapsed = time.monotonic() - start_time
+                    logger.info(f"Synthesizer Agent: completed in {elapsed:.2f}s (attempt {attempt}).")
+                    return result
+                else:
+                    logger.warning(
+                        f"Synthesizer Agent: attempt {attempt}/{_MAX_ATTEMPTS} returned structured failure."
+                    )
+                    if attempt == _MAX_ATTEMPTS:
+                        result.error = f"Synthesizer Agent failed after {_MAX_ATTEMPTS} attempts: structured output could not be parsed"
+                        return result
 
             except Exception as exc:
                 last_error = exc
@@ -143,8 +151,17 @@ class SynthesizerAgent:
         # All attempts exhausted
         logger.error(f"Synthesizer Agent: all {_MAX_ATTEMPTS} attempts failed. Last error: {last_error!r}")
         return self._make_failed_output(
-            f"Synthesizer Agent failed after {_MAX_ATTEMPTS} attempts: {last_error}"
+            error_message=f"Synthesizer Agent failed after {_MAX_ATTEMPTS} attempts: {last_error}" if last_error else "Synthesizer structured output could not be parsed",
+            error_type="llm_provider_error" if last_error else "invalid_structured_output",
+            retryable=False,
         )
+
+    async def synthesize(self, problem: str, context: Optional[dict] = None, **kwargs: Any) -> SynthesizerResult:
+        """Alias for run to support polymorphic synthesize calls across workflows."""
+        merged_context = dict(context) if isinstance(context, dict) else {}
+        if kwargs:
+            merged_context.update(kwargs)
+        return await self.run(problem, context=merged_context or None)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -274,6 +291,28 @@ class SynthesizerAgent:
                 f"RULE: Do NOT claim these failed agents participated, approved, or validated the result. Disclose any critical missing perspective in limitations if material."
             )
 
+        # Highlight external verified sources if available
+        retrieved_sources = None
+        if isinstance(context, dict):
+            retrieved_sources = context.get("retrieved_sources")
+            if not retrieved_sources and "all_outputs" in context and isinstance(context["all_outputs"], dict):
+                r_out = context["all_outputs"].get("researcher") or {}
+                if isinstance(r_out, dict):
+                    retrieved_sources = r_out.get("sources") or r_out.get("source_references")
+        if retrieved_sources:
+            src_list = []
+            for s in retrieved_sources:
+                if isinstance(s, dict):
+                    src_list.append(s.get("title") or s.get("url") or str(s))
+                else:
+                    src_list.append(str(s))
+            if src_list:
+                parts.append(
+                    "EXTERNAL VERIFIED SOURCES (Information Acquisition & Research):\n"
+                    + "\n".join(f"- {s}" for s in src_list[:12])
+                    + "\nRULE: Explicitly ground factual statements in these external sources where appropriate. Preserve provenance without fabricating citations."
+                )
+
         context_str = cls._safe_serialize_context(context)
         if context_str:
             parts.append(f"{REFERENCE_CONTEXT_HEADER}\n\n{context_str}")
@@ -283,44 +322,230 @@ class SynthesizerAgent:
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """Extract JSON from raw LLM text, tolerating markdown fences."""
+        """Extract candidate JSON from raw LLM text, tolerating markdown fences and outer text."""
+        stripped = text.strip()
+        first_brace = stripped.find("{")
+        last_brace = stripped.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            return stripped[first_brace:last_brace + 1]
+
         match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
         if match:
-            return match.group(1)
-        brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if brace_match:
-            return brace_match.group(0)
-        return text
+            return match.group(1).strip()
+        return stripped
+
+    @staticmethod
+    def _normalize_and_repair_json(text: str) -> str:
+        """Normalize and repair common LLM JSON transport and encoding issues safely.
+
+        Handles:
+        1. Invalid backslash escape sequences (e.g., LaTeX \\alpha, file paths C:\\Users, regex \\d).
+        2. Raw unescaped control characters inside JSON strings (e.g. literal newlines, tabs).
+        3. Trailing commas before closing braces/brackets.
+        """
+        if not text or not text.strip():
+            return text
+
+        # Step 1: Repair invalid backslash escapes and raw control characters inside string literals.
+        # Valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+        result = []
+        i = 0
+        n = len(text)
+        in_string = False
+
+        while i < n:
+            c = text[i]
+
+            if c == '"':
+                num_backslashes = 0
+                j = i - 1
+                while j >= 0 and text[j] == '\\':
+                    num_backslashes += 1
+                    j -= 1
+                if num_backslashes % 2 == 0:
+                    in_string = not in_string
+                result.append(c)
+                i += 1
+            elif in_string:
+                if c == '\\':
+                    if i + 1 < n:
+                        next_c = text[i + 1]
+                        if next_c in ('"', '\\', '/', 'b', 'f', 'n', 'r', 't'):
+                            result.append('\\')
+                            result.append(next_c)
+                            i += 2
+                        elif next_c == 'u':
+                            if i + 5 < n and all(text[i + 2 + k] in "0123456789abcdefABCDEF" for k in range(4)):
+                                result.append(text[i:i + 6])
+                                i += 6
+                            else:
+                                result.append('\\\\')
+                                i += 1
+                        else:
+                            result.append('\\\\')
+                            i += 1
+                    else:
+                        result.append('\\\\')
+                        i += 1
+                elif c == '\n':
+                    result.append('\\n')
+                    i += 1
+                elif c == '\r':
+                    result.append('\\r')
+                    i += 1
+                elif c == '\t':
+                    result.append('\\t')
+                    i += 1
+                elif ord(c) < 32:
+                    result.append(f"\\u{ord(c):04x}")
+                    i += 1
+                else:
+                    result.append(c)
+                    i += 1
+            else:
+                result.append(c)
+                i += 1
+
+        cleaned = "".join(result)
+
+        # Step 2: Remove trailing commas before } or ]
+        cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
+
+        return cleaned
+
+    @staticmethod
+    def _attempt_repair_unterminated_json(text: str) -> Optional[dict]:
+        """Attempt bounded recovery for truncated or unterminated JSON structures."""
+        cleaned = text.strip()
+        if not cleaned.startswith("{"):
+            first_brace = cleaned.find("{")
+            if first_brace != -1:
+                cleaned = cleaned[first_brace:]
+            else:
+                return None
+
+        in_string = False
+        for i, c in enumerate(cleaned):
+            if c == '"':
+                num_b = 0
+                j = i - 1
+                while j >= 0 and cleaned[j] == '\\':
+                    num_b += 1
+                    j -= 1
+                if num_b % 2 == 0:
+                    in_string = not in_string
+
+        recovery_candidate = cleaned
+        if in_string:
+            recovery_candidate += '"'
+
+        open_curly = recovery_candidate.count("{") - recovery_candidate.count("}")
+        open_square = recovery_candidate.count("[") - recovery_candidate.count("]")
+
+        if open_square > 0:
+            recovery_candidate += "]" * open_square
+        if open_curly > 0:
+            recovery_candidate += "}" * open_curly
+
+        try:
+            data = json.loads(recovery_candidate)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _extract_fields_fallback(text: str) -> Optional[dict]:
+        """Bounded fallback extraction when JSON structure cannot be restored."""
+        match = re.search(
+            r'"final_answer"\s*:\s*"(.*?)(?:"\s*,\s*"(?:key_decisions|supporting_findings|resolved_conflicts|unresolved_conflicts|limitations|assumptions|missing_information|provenance)"|\s*\}\s*$)',
+            text,
+            re.DOTALL,
+        )
+        if match:
+            fa_text = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+            return {
+                "agent": "synthesizer",
+                "status": "completed",
+                "final_answer": fa_text,
+                "key_decisions": [],
+                "supporting_findings": [],
+                "resolved_conflicts": [],
+                "unresolved_conflicts": [],
+                "limitations": ["Parsed via bounded field extraction fallback."],
+                "assumptions": [],
+                "missing_information": [],
+                "provenance": [],
+            }
+        return None
 
     def _parse_response(self, response_text: str) -> SynthesizerResult:
-        """Parse raw LLM text into a validated SynthesizerResult."""
-        json_str = self._extract_json(response_text)
+        """Parse raw LLM text into a validated SynthesizerResult using bounded recovery."""
+        candidate = self._extract_json(response_text)
 
+        # 1. Direct parse attempt
         try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"LLM output is not valid JSON: {exc}") from exc
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return SynthesizerResult(**data)
+        except Exception:
+            pass
 
-        if not isinstance(data, dict):
-            raise ValueError(f"Expected JSON object, got {type(data).__name__}")
-
+        # 2. Normalize transport / format issues (escapes, control chars, trailing commas)
+        normalized = candidate
         try:
-            return SynthesizerResult(**data)
-        except Exception as exc:
-            raise ValueError(f"Schema validation failed: {exc}") from exc
+            normalized = self._normalize_and_repair_json(candidate)
+            data = json.loads(normalized)
+            if isinstance(data, dict):
+                return SynthesizerResult(**data)
+        except Exception:
+            pass
+
+        # 3. Bounded recovery attempt (unterminated strings / unclosed structures)
+        try:
+            data = self._attempt_repair_unterminated_json(normalized)
+            if data and isinstance(data, dict):
+                return SynthesizerResult(**data)
+        except Exception:
+            pass
+
+        # 4. Bounded field extraction fallback
+        try:
+            data = self._extract_fields_fallback(response_text)
+            if data and isinstance(data, dict):
+                return SynthesizerResult(**data)
+        except Exception:
+            pass
+
+        # 5. All recovery attempts failed -> Structured Synthesizer failure
+        logger.warning("Synthesizer Agent: structured output parsing failed after all recovery attempts.")
+        return self._make_failed_output(
+            error_message="Synthesizer structured output could not be parsed",
+            error_type="invalid_structured_output",
+            retryable=False,
+        )
 
     # ------------------------------------------------------------------
     # Fallback and mock builders
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _make_failed_output(error_message: str) -> SynthesizerResult:
-        """Return a minimal SynthesizerResult representing a failure."""
+    def _make_failed_output(
+        error_message: str,
+        error_type: str = "invalid_structured_output",
+        retryable: bool = False,
+    ) -> SynthesizerResult:
+        """Return a minimal SynthesizerResult representing a structured failure."""
         return SynthesizerResult(
             agent="synthesizer",
             status=AgentStatus.FAILED,
-            final_answer=f"Synthesis could not be completed: {error_message}",
-            limitations=[error_message],
+            final_answer="CHAI could not complete the final synthesis reliably for this request.",
+            limitations=["Synthesizer structured output could not be completed; specialist analysis preserved."],
+            error_type=error_type,
+            error=error_message,
+            retryable=retryable,
         )
 
     @classmethod
@@ -364,40 +589,94 @@ class SynthesizerAgent:
         source = context.get("all_outputs") if (context and isinstance(context.get("all_outputs"), dict)) else (context or {})
 
         # Extract context-specific signals
-        researcher_data = source.get("researcher", {})
-        engineer_data = source.get("engineer", {})
-        guardian_data = source.get("guardian", {})
-        security_data = source.get("security", {})
-        evaluator_data = source.get("evaluator", {})
-        conflict_data = source.get("conflict_resolver", {})
+        def _to_dict(val):
+            if hasattr(val, "model_dump"):
+                return val.model_dump()
+            if isinstance(val, dict):
+                return val
+            return {}
+
+        researcher_data = _to_dict(source.get("researcher"))
+        engineer_data = _to_dict(source.get("engineer"))
+        guardian_data = _to_dict(source.get("guardian"))
+        security_data = _to_dict(source.get("security"))
+        evaluator_data = _to_dict(source.get("evaluator"))
+        conflict_data = _to_dict(source.get("conflict_resolver"))
+        strategist_data = _to_dict(source.get("strategist"))
 
         # Build unified response grounded in inputs
         constraints = researcher_data.get("constraints", [])
         architecture = engineer_data.get("architecture") or engineer_data.get("technical_architecture", "Architecture not specified")
-        priorities = source.get("strategist", {}).get("priorities", [])
+        priorities = strategist_data.get("priorities", [])
 
         # Conflict resolution handling
         resolved_conflicts: List[ResolvedConflict] = []
         unresolved_conflicts: List[UnresolvedConflict] = []
 
-        if conflict_data:
-            c_status = conflict_data.get("status", "").lower()
-            if c_status in ("resolved", "completed", "success"):
-                resolved_conflicts.append(
-                    ResolvedConflict(
-                        conflict=conflict_data.get("conflict", "Requirement vs implementation trade-off"),
-                        resolution=conflict_data.get("resolution", "Adapted design to satisfy core constraints."),
-                        source="conflict_resolver",
+        if conflict_data and isinstance(conflict_data, dict):
+            c_status = str(conflict_data.get("status", "")).lower()
+
+            # 1. Process explicit resolutions list if present
+            raw_resolutions = conflict_data.get("resolutions") or []
+            if isinstance(raw_resolutions, list) and raw_resolutions:
+                for r in raw_resolutions:
+                    if isinstance(r, dict):
+                        c_title = r.get("conflict") or r.get("issue")
+                        c_res = r.get("resolution") or r.get("decision")
+                    else:
+                        c_title = getattr(r, "conflict", None)
+                        c_res = getattr(r, "resolution", None) or getattr(r, "decision", None)
+                    if c_title and c_res:
+                        resolved_conflicts.append(
+                            ResolvedConflict(
+                                conflict=str(c_title),
+                                resolution=str(c_res),
+                                source="conflict_resolver",
+                            )
+                        )
+            elif c_status in ("resolved", "completed", "success"):
+                legacy_conf = conflict_data.get("conflict")
+                legacy_res = conflict_data.get("resolution")
+                if legacy_conf and legacy_res:
+                    resolved_conflicts.append(
+                        ResolvedConflict(
+                            conflict=str(legacy_conf),
+                            resolution=str(legacy_res),
+                            source="conflict_resolver",
+                        )
                     )
-                )
+
+            # 2. Process explicit unresolved conflicts list if present
+            raw_unresolved = conflict_data.get("unresolved_conflicts") or []
+            if isinstance(raw_unresolved, list) and raw_unresolved:
+                for u in raw_unresolved:
+                    if isinstance(u, dict):
+                        u_title = u.get("conflict") or u.get("issue")
+                        u_reason = u.get("reason_unresolved") or u.get("reason")
+                        u_impact = u.get("impact")
+                    else:
+                        u_title = getattr(u, "conflict", None)
+                        u_reason = getattr(u, "reason_unresolved", None) or getattr(u, "reason", None)
+                        u_impact = getattr(u, "impact", None)
+                    if u_title and u_reason:
+                        unresolved_conflicts.append(
+                            UnresolvedConflict(
+                                conflict=str(u_title),
+                                reason_unresolved=str(u_reason),
+                                impact=str(u_impact) if u_impact else "Implementation must be decided based on specific field constraints.",
+                            )
+                        )
             elif c_status == "unresolved":
-                unresolved_conflicts.append(
-                    UnresolvedConflict(
-                        conflict=conflict_data.get("issue") or conflict_data.get("conflict", "Unresolved trade-off"),
-                        reason_unresolved=conflict_data.get("reason_unresolved", "Insufficient deployment details to arbitrate."),
-                        impact="Implementation must be decided based on specific field constraints.",
+                legacy_u_conf = conflict_data.get("issue") or conflict_data.get("conflict")
+                legacy_u_reason = conflict_data.get("reason_unresolved") or conflict_data.get("reason")
+                if legacy_u_conf and legacy_u_reason:
+                    unresolved_conflicts.append(
+                        UnresolvedConflict(
+                            conflict=str(legacy_u_conf),
+                            reason_unresolved=str(legacy_u_reason),
+                            impact="Implementation must be decided based on specific field constraints.",
+                        )
                     )
-                )
 
         # Evaluator conflicts check
         eval_conflicts = evaluator_data.get("conflicts", [])
@@ -420,19 +699,121 @@ class SynthesizerAgent:
         if not context:
             limitations.append("No multi-agent context was supplied; response is based solely on problem statement.")
 
-        # Build final unified answer
-        answer_parts = [
-            f"Recommended Solution for '{problem}':\n"
-            f"Deploy an integrated, resilient solution addressing the primary requirements."
+        # Build comprehensive multi-section Markdown deliverable for complex queries
+        sections = [
+            f"## Executive Summary\n"
+            f"This proposal establishes a comprehensive, resilient solution for '{problem}'. "
+            f"By unifying strategic priorities, technical architecture, safety guardrails, defensive cybersecurity controls, "
+            f"and arbitrated trade-off resolutions, the design delivers a cohesive operational framework tailored to the problem."
         ]
-        if constraints:
-            answer_parts.append(f"Core Constraints: {', '.join(str(c) for c in constraints)}.")
-        if priorities:
-            answer_parts.append(f"Strategic Focus: {', '.join(str(p) for p in priorities)}.")
-        if resolved_conflicts:
-            answer_parts.append(f"Reconciled Approach: {resolved_conflicts[0].resolution}")
-        if unresolved_conflicts:
-            answer_parts.append(f"Unresolved Consideration: {unresolved_conflicts[0].conflict} ({unresolved_conflicts[0].reason_unresolved})")
+
+        # Strategic priorities
+        strat_summary = strategist_data.get("strategy") or strategist_data.get("strategy_overview") or ""
+        if priorities or strat_summary:
+            strat_body = f"{strat_summary}\n\n" if strat_summary else ""
+            if priorities:
+                strat_body += "### Strategic Priorities:\n" + "\n".join(f"- {p}" for p in priorities)
+            sections.append(f"## Recommended Solution & Strategy\n{strat_body.strip()}")
+        else:
+            sections.append(
+                f"## Recommended Solution & Strategy\n"
+                f"The core strategy centers on a phased deployment model, balancing time-to-value, "
+                f"operational reliability, and user trust. Foundational capabilities are prioritized to establish "
+                f"a dependable baseline before expanding into advanced operational capabilities."
+            )
+
+        # Technical Architecture
+        arch_summary = ""
+        if isinstance(architecture, dict):
+            arch_summary = architecture.get("overview") or str(architecture)
+        elif architecture and architecture != "Architecture not specified":
+            arch_summary = str(architecture)
+        components = engineer_data.get("components", [])
+        tech_recs = engineer_data.get("technology_recommendations", [])
+        if arch_summary or components or tech_recs:
+            eng_body = f"{arch_summary}\n\n" if arch_summary else ""
+            if components:
+                eng_body += "### Core Architecture Components:\n" + "\n".join(f"- {c}" for c in components)
+            if tech_recs:
+                eng_body += "\n\n### Technology Recommendations:\n"
+                for tr in tech_recs[:4]:
+                    if isinstance(tr, dict):
+                        eng_body += f"- **{tr.get('technology', 'Tech')}**: {tr.get('purpose', '')} ({tr.get('rationale', '')})\n"
+                    else:
+                        eng_body += f"- {tr}\n"
+            sections.append(f"## Technical Architecture & System Design\n{eng_body.strip()}")
+
+        # Security & Safety
+        sec_summary = security_data.get("security_summary") or ""
+        sec_threats = security_data.get("threats") or []
+        sec_mitigations = security_data.get("mitigations") or []
+        guard_assessment = guardian_data.get("safety_assessment") or guardian_data.get("summary") or ""
+        guard_mitigations = guardian_data.get("recommended_mitigations") or guardian_data.get("mitigations") or []
+
+        if sec_summary or guard_assessment or sec_threats or guard_mitigations:
+            sec_body = []
+            if sec_summary:
+                sec_body.append(f"### Cybersecurity Defense Posture\n{sec_summary}")
+            if sec_threats:
+                sec_body.append("Key Threat Vectors Identified:\n" + "\n".join(f"- {t}" for t in sec_threats[:4]))
+            if sec_mitigations:
+                sec_body.append("Security Mitigations:\n" + "\n".join(f"- {m}" for m in sec_mitigations[:4]))
+            if guard_assessment:
+                sec_body.append(f"### Safety, Privacy & Ethical Guardrails\n{guard_assessment}")
+            if guard_mitigations:
+                sec_body.append("Safety & Compliance Controls:\n" + "\n".join(f"- {gm}" for gm in guard_mitigations[:4]))
+            sections.append(f"## Security, Privacy & Safety Guardrails\n" + "\n\n".join(sec_body))
+
+        # Trade-offs & Conflict Resolutions
+        if resolved_conflicts or unresolved_conflicts:
+            tradeoff_body = []
+            if resolved_conflicts:
+                tradeoff_body.append("### Arbitrated Trade-Offs & Decisions (Conflict Resolver):")
+                for rc in resolved_conflicts:
+                    tradeoff_body.append(f"- **{rc.conflict}**: Reconciled as *{rc.resolution}* (Source: {rc.source}).")
+            if unresolved_conflicts:
+                tradeoff_body.append("### Unresolved Trade-Offs Requiring Stakeholder Decision:")
+                for uc in unresolved_conflicts:
+                    tradeoff_body.append(f"- **{uc.conflict}**: {uc.reason_unresolved} (Impact: {uc.impact})")
+            sections.append(f"## Trade-offs & Reconciled Decisions\n" + "\n\n".join(tradeoff_body))
+
+        # Risks & Mitigations
+        risks = engineer_data.get("technical_risks", [])
+        if risks:
+            risk_body = "### Technical & Operational Risks:\n"
+            for r in risks[:4]:
+                if isinstance(r, dict):
+                    risk_body += f"- **{r.get('risk', 'Risk')}**: Impact: {r.get('impact', 'N/A')} | Mitigation: {r.get('mitigation', 'N/A')}\n"
+            sections.append(f"## Risks & Mitigations\n{risk_body.strip()}")
+
+        # Implementation Roadmap
+        roadmap = strategist_data.get("milestones", []) or engineer_data.get("implementation_plan", [])
+        if roadmap:
+            road_body = "### Phased Implementation Roadmap:\n"
+            for step in roadmap[:4]:
+                if isinstance(step, dict):
+                    road_body += f"- **{step.get('milestone') or step.get('phase', 'Phase')}**: {step.get('description') or step.get('target', '')}\n"
+                else:
+                    road_body += f"- {step}\n"
+            sections.append(f"## Implementation Roadmap\n{road_body.strip()}")
+
+        # Limitations & Gaps
+        if limitations:
+            lim_body = "### System Boundaries & Identified Gaps:\n" + "\n".join(f"- {l}" for l in limitations)
+            sections.append(f"## Limitations & Evidence Gaps\n{lim_body}")
+
+        # Sources & Provenance
+        sources = researcher_data.get("sources", []) or researcher_data.get("source_references", [])
+        if sources:
+            src_body = "### External References & Benchmarks:\n"
+            for s in sources[:5]:
+                if isinstance(s, dict):
+                    src_body += f"- [{s.get('title', 'Source')}]({s.get('url', '#')})\n"
+                else:
+                    src_body += f"- {s}\n"
+            sections.append(f"## Sources & Provenance\n{src_body.strip()}")
+
+        final_answer_text = "\n\n".join(sections)
 
         key_decisions = [
             KeyDecision(
@@ -460,7 +841,7 @@ class SynthesizerAgent:
         return SynthesizerResult(
             agent="synthesizer",
             status=AgentStatus.COMPLETED,
-            final_answer="\n\n".join(answer_parts),
+            final_answer=final_answer_text,
             key_decisions=key_decisions,
             supporting_findings=[
                 SupportingFinding(

@@ -29,7 +29,10 @@ from backend.agents.security.models import SecurityResult
 from backend.agents.security.agent import SecurityAgent
 from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput
 from backend.agents.evaluator.agent import EvaluatorAgent
+from backend.agents.conflict_resolver.agent import ConflictResolverAgent
 from backend.synthesis.synthesizer import Synthesizer
+from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent
+from backend.agents.reliability_monitor.schemas import ReliabilityAction
 from backend.validation.output_validator import OutputValidator
 from backend.core.contracts import (
     ResearcherInputContract,
@@ -54,7 +57,9 @@ AGENT_REGISTRY = {
     "guardian": GuardianAgent,
     "security": SecurityAgent,
     "evaluator": EvaluatorAgent,
+    "conflict_resolver": ConflictResolverAgent,
     "synthesizer": Synthesizer,
+    "reliability_monitor": ReliabilityMonitorAgent,
     "output_validator": OutputValidator,
 }
 
@@ -82,7 +87,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     guard_agent = instances.get("guardian") or GuardianAgent()
     sec_agent = instances.get("security") or SecurityAgent()
     eval_agent = instances.get("evaluator") or EvaluatorAgent()
+    cr_agent = instances.get("conflict_resolver") or ConflictResolverAgent()
     synth_agent = instances.get("synthesizer") or Synthesizer()
+    rm_agent = instances.get("reliability_monitor") or ReliabilityMonitorAgent()
     validator_agent = instances.get("output_validator") or instances.get("validator") or OutputValidator()
 
     # -----------------------------------------------------------------
@@ -658,7 +665,69 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             }
 
     # -----------------------------------------------------------------
-    # Node 9: Synthesizer Node
+    # Node 9: Conflict Resolver Node
+    # -----------------------------------------------------------------
+    async def conflict_resolver_node(state: CHAIState) -> Dict[str, Any]:
+        start = time.monotonic()
+        problem = state.get("problem", "")
+        context_for_cr = {"all_outputs": state.get("agent_outputs", {})}
+        logger.info("ConflictResolverNode: resolving cross-agent contradictions and tradeoffs")
+
+        try:
+            try:
+                cr_output = await cr_agent.run(problem, context=context_for_cr)
+            except TypeError:
+                cr_output = await cr_agent.run(problem)
+
+            duration = (time.monotonic() - start) * 1000
+            is_failed = getattr(cr_output, "status", "") == "failed"
+
+            if is_failed:
+                trace_item = {
+                    "agent": "conflict_resolver",
+                    "status": "failed",
+                    "timestamp": _iso_now(),
+                    "duration_ms": round(duration, 2),
+                    "error": "Conflict Resolver reported failure status",
+                }
+                return {
+                    "failed_agents": state.get("failed_agents", []) + ["conflict_resolver"],
+                    "errors": state.get("errors", []) + ["Conflict Resolver reported failure status"],
+                    "execution_trace": state.get("execution_trace", []) + [trace_item],
+                }
+
+            reg = register_agent_result(state, "conflict_resolver", cr_output)
+            trace_item = {
+                "agent": "conflict_resolver",
+                "status": "completed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+            }
+
+            return {
+                **reg,
+                "completed_agents": state.get("completed_agents", []) + ["conflict_resolver"],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+        except Exception as e:
+            logger.error(f"ConflictResolverNode failed: {e}")
+            duration = (time.monotonic() - start) * 1000
+            err_msg = f"Conflict Resolver failed: {type(e).__name__}"
+            trace_item = {
+                "agent": "conflict_resolver",
+                "status": "failed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "error": err_msg,
+            }
+            return {
+                "failed_agents": state.get("failed_agents", []) + ["conflict_resolver"],
+                "errors": state.get("errors", []) + [err_msg],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+
+    # -----------------------------------------------------------------
+    # Node 10: Synthesizer Node
     # -----------------------------------------------------------------
     async def synthesizer_node(state: CHAIState) -> Dict[str, Any]:
         start = time.monotonic()
@@ -686,22 +755,41 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         )
 
         try:
-            synth_output = await synth_agent.synthesize(
-                problem=synth_input.problem,
-                research=synth_input.research or res_obj,
-                strategy=synth_input.strategy or strat_obj,
-                engineering=synth_input.engineering,
-                guardian=synth_input.guardian,
-                security=synth_input.security or sec_obj,
-                evaluator=synth_input.evaluator,
-                sources=synth_input.sources,
-                conflicts=synth_input.conflicts,
-                all_agent_results=synth_input.all_agent_results,
-            )
+            if hasattr(synth_agent, "synthesize"):
+                synth_output = await synth_agent.synthesize(
+                    problem=synth_input.problem,
+                    research=synth_input.research or res_obj,
+                    strategy=synth_input.strategy or strat_obj,
+                    engineering=synth_input.engineering,
+                    guardian=synth_input.guardian,
+                    security=synth_input.security or sec_obj,
+                    evaluator=synth_input.evaluator,
+                    sources=synth_input.sources,
+                    conflicts=synth_input.conflicts,
+                    all_agent_results=synth_input.all_agent_results,
+                )
+            else:
+                synth_output = await synth_agent.run(
+                    problem=synth_input.problem,
+                    context={"all_outputs": synth_input.all_agent_results},
+                )
             duration = (time.monotonic() - start) * 1000
 
+            final_text_candidate = (
+                getattr(synth_output, "final_answer", None)
+                or getattr(synth_output, "final_text", None)
+                or getattr(synth_output, "reconciled_solution", "")
+            )
             if not isinstance(synth_output, SynthesisResult):
-                synth_output = SynthesisResult.model_validate(synth_output)
+                try:
+                    synth_output = SynthesisResult.model_validate(synth_output)
+                except Exception:
+                    synth_output = SynthesisResult(
+                        agent="synthesizer",
+                        status="completed",
+                        summary="Synthesis complete",
+                        final_text=str(final_text_candidate),
+                    )
 
             reg = register_agent_result(state, "synthesizer", synth_output)
             trace_item = {
@@ -713,6 +801,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             }
             return {
                 **reg,
+                "final_answer": final_text_candidate,
                 "completed_agents": state.get("completed_agents", []) + ["synthesizer"],
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
@@ -736,13 +825,106 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             reg = register_agent_result(state, "synthesizer", fallback_synth)
             return {
                 **reg,
+                "final_answer": fallback_synth.final_text,
                 "failed_agents": state.get("failed_agents", []) + ["synthesizer"],
                 "errors": state.get("errors", []) + [err_msg],
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
 
     # -----------------------------------------------------------------
-    # Node 10: Output Validator Node
+    # Node 11: Reliability Monitor Node
+    # -----------------------------------------------------------------
+    async def reliability_monitor_node(state: CHAIState) -> Dict[str, Any]:
+        start = time.monotonic()
+        problem = state.get("problem", "")
+        synth_obj = get_canonical_agent_result(state, "synthesizer")
+        current_answer = (
+            state.get("final_answer")
+            or getattr(synth_obj, "final_text", "")
+            or getattr(synth_obj, "final_answer", "")
+        )
+        context_for_rm = {
+            "all_outputs": state.get("agent_outputs", {}),
+            "final_answer": current_answer,
+            "execution_statuses": state.get("agent_execution_statuses", []),
+        }
+        logger.info("ReliabilityMonitorNode: auditing synthesized solution quality and safety gates")
+
+        try:
+            try:
+                rm_output = await rm_agent.run(problem, context=context_for_rm)
+            except TypeError:
+                rm_output = await rm_agent.run(problem)
+
+            duration = (time.monotonic() - start) * 1000
+            rm_dump = rm_output.model_dump() if hasattr(rm_output, "model_dump") else dict(rm_output)
+            raw_action = getattr(rm_output, "action", None) or rm_dump.get("action")
+            if isinstance(raw_action, ReliabilityAction):
+                rm_action = raw_action
+            elif isinstance(raw_action, str):
+                try:
+                    rm_action = ReliabilityAction(raw_action.upper())
+                except Exception:
+                    rm_action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
+            else:
+                rm_action = ReliabilityAction.PROCEED
+
+            gated_answer = current_answer
+            if rm_action == ReliabilityAction.BLOCK_OUTPUT:
+                reasons = rm_dump.get("concerns", []) or ["Critical reliability or safety standard violation."]
+                reasons_str = "; ".join(reasons) if isinstance(reasons, list) else str(reasons)
+                gated_answer = (
+                    f"[BLOCKED] The synthesized output cannot be delivered because it failed critical "
+                    f"reliability and safety standards. Reason: {reasons_str}"
+                )
+            elif rm_action == ReliabilityAction.REQUEST_MORE_INFORMATION:
+                missing_items = rm_dump.get("missing_information", []) or []
+                if missing_items:
+                    items_str = "\n".join(f"- {item}" for item in missing_items)
+                    gated_answer = (
+                        f"[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
+                        f"the following additional information is required:\n{items_str}"
+                    )
+                else:
+                    gated_answer = (
+                        "[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
+                        "additional context regarding system requirements is required."
+                    )
+
+            reg = register_agent_result(state, "reliability_monitor", rm_output)
+            trace_item = {
+                "agent": "reliability_monitor",
+                "status": "completed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "details": f"Reliability gate action: {rm_action.value if hasattr(rm_action, 'value') else rm_action}",
+            }
+
+            return {
+                **reg,
+                "final_answer": gated_answer,
+                "completed_agents": state.get("completed_agents", []) + ["reliability_monitor"],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+        except Exception as e:
+            logger.error(f"ReliabilityMonitorNode failed: {e}")
+            duration = (time.monotonic() - start) * 1000
+            err_msg = f"Reliability Monitor failed: {type(e).__name__}"
+            trace_item = {
+                "agent": "reliability_monitor",
+                "status": "failed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "error": err_msg,
+            }
+            return {
+                "failed_agents": state.get("failed_agents", []) + ["reliability_monitor"],
+                "errors": state.get("errors", []) + [err_msg],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+
+    # -----------------------------------------------------------------
+    # Node 12: Output Validator Node
     # -----------------------------------------------------------------
     async def output_validator_node(state: CHAIState) -> Dict[str, Any]:
         start = time.monotonic()
@@ -750,8 +932,18 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         logger.info("OutputValidatorNode: validating final synthesized output")
 
         synth_obj = get_canonical_agent_result(state, "synthesizer")
+        delivered_candidate = (
+            state.get("final_answer")
+            or getattr(synth_obj, "final_text", "")
+            or getattr(synth_obj, "final_answer", "")
+        )
         try:
-            val_output = validator_agent.validate(synthesis=synth_obj, problem=problem)
+            val_output = validator_agent.validate(
+                output=delivered_candidate,
+                context={"all_outputs": state.get("agent_outputs", {})},
+                synthesis=synth_obj if isinstance(synth_obj, SynthesisResult) and not state.get("final_answer") else None,
+                problem=problem,
+            )
             duration = (time.monotonic() - start) * 1000
 
             if not isinstance(val_output, ValidationResult):
@@ -765,9 +957,10 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "duration_ms": round(duration, 2),
                 "details": f"Validation passed={val_output.is_valid} with {len(val_output.issues)} issues.",
             }
+            final_text_out = val_output.sanitized_output or val_output.sanitized_text or delivered_candidate
             return {
                 **reg,
-                "final_answer": val_output.sanitized_text,
+                "final_answer": final_text_out,
                 "execution_status": "completed",
                 "completed_agents": state.get("completed_agents", []) + ["output_validator"],
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
@@ -788,7 +981,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 status="failed",
                 is_valid=False,
                 issues=[err_msg],
-                sanitized_text=getattr(synth_obj, "final_text", "") or "Validation error.",
+                sanitized_text=delivered_candidate or "Validation error.",
             )
             reg = register_agent_result(state, "output_validator", fallback_val)
             return {
@@ -814,7 +1007,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     graph.add_node("guardian", guardian_node)
     graph.add_node("security", security_node)
     graph.add_node("evaluator", evaluator_node)
+    graph.add_node("conflict_resolver", conflict_resolver_node)
     graph.add_node("synthesizer", synthesizer_node)
+    graph.add_node("reliability_monitor", reliability_monitor_node)
     graph.add_node("output_validator", output_validator_node)
 
     # Flow definitions
@@ -845,8 +1040,10 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     graph.add_edge("engineer", "guardian")
     graph.add_edge("guardian", "security")
     graph.add_edge("security", "evaluator")
-    graph.add_edge("evaluator", "synthesizer")
-    graph.add_edge("synthesizer", "output_validator")
+    graph.add_edge("evaluator", "conflict_resolver")
+    graph.add_edge("conflict_resolver", "synthesizer")
+    graph.add_edge("synthesizer", "reliability_monitor")
+    graph.add_edge("reliability_monitor", "output_validator")
     graph.add_edge("output_validator", END)
 
     return graph.compile()

@@ -134,7 +134,7 @@ class ReliabilityMonitorAgent:
 
                 # Parse and validate
                 result = self._parse_response(response_text)
-                result = self._enforce_scoring_policy(result)
+                result = self._enforce_scoring_policy(result, context=context)
 
                 elapsed = time.monotonic() - start_time
                 logger.info(f"Reliability Monitor Agent: completed in {elapsed:.2f}s (attempt {attempt}).")
@@ -151,7 +151,8 @@ class ReliabilityMonitorAgent:
             f"Reliability Monitor Agent: all {_MAX_ATTEMPTS} attempts failed. Last error: {last_error!r}"
         )
         return self._make_failed_output(
-            f"Reliability Monitor Agent failed after {_MAX_ATTEMPTS} attempts: {last_error}"
+            f"Reliability Monitor Agent failed after {_MAX_ATTEMPTS} attempts: {last_error}",
+            context=context,
         )
 
     # ------------------------------------------------------------------
@@ -212,13 +213,122 @@ class ReliabilityMonitorAgent:
         return serialized
 
     @classmethod
+    def _extract_execution_metadata(cls, context: Optional[dict]) -> dict:
+        """Extract explicit workflow execution state, statuses, and final answer health."""
+        metadata = {
+            "executed_agents": [],
+            "successful_agents": [],
+            "failed_agents": [],
+            "synthesizer_succeeded": True,
+            "synthesizer_status": "completed",
+            "final_answer_has_internal_error": False,
+            "critical_agents_failed": [],
+        }
+        if not context or not isinstance(context, dict):
+            return metadata
+
+        statuses = context.get("execution_statuses") or context.get("agent_execution_statuses") or []
+        all_outputs = context.get("all_outputs") if isinstance(context.get("all_outputs"), dict) else context
+
+        # 1. Parse from execution_statuses
+        for s in statuses:
+            name = getattr(s, "agent_name", None) or (s.get("agent_name") if isinstance(s, dict) else None)
+            stat = getattr(s, "status", None) or (s.get("status") if isinstance(s, dict) else None)
+            if not name:
+                continue
+            name_str = str(name).strip().lower()
+            stat_str = str(stat).strip().lower()
+
+            if name_str not in metadata["executed_agents"]:
+                metadata["executed_agents"].append(name_str)
+
+            if stat_str in ("success", "completed"):
+                if name_str not in metadata["successful_agents"]:
+                    metadata["successful_agents"].append(name_str)
+            elif stat_str in ("failed", "failure", "error"):
+                if name_str not in metadata["failed_agents"]:
+                    metadata["failed_agents"].append(name_str)
+
+        # 2. Cross-reference with all_outputs dict
+        for k, v in all_outputs.items():
+            if not v or not isinstance(v, dict):
+                continue
+            k_lower = str(k).strip().lower()
+            if k_lower in _KNOWN_CHAI_AGENTS:
+                if k_lower not in metadata["executed_agents"]:
+                    metadata["executed_agents"].append(k_lower)
+                v_stat = str(v.get("status", "")).strip().lower()
+                if v_stat in ("failed", "failure", "error"):
+                    if k_lower not in metadata["failed_agents"]:
+                        metadata["failed_agents"].append(k_lower)
+                    if k_lower in metadata["successful_agents"]:
+                        metadata["successful_agents"].remove(k_lower)
+                elif v_stat in ("completed", "success"):
+                    if k_lower not in metadata["successful_agents"] and k_lower not in metadata["failed_agents"]:
+                        metadata["successful_agents"].append(k_lower)
+
+        # 3. Check Synthesizer Status specifically
+        synth_data = all_outputs.get("synthesizer") if isinstance(all_outputs, dict) else None
+        if synth_data and isinstance(synth_data, dict):
+            s_stat = str(synth_data.get("status", "")).strip().lower()
+            metadata["synthesizer_status"] = s_stat
+            if s_stat in ("failed", "failure", "error") or "synthesizer" in metadata["failed_agents"]:
+                metadata["synthesizer_succeeded"] = False
+        elif "synthesizer" in metadata["failed_agents"]:
+            metadata["synthesizer_succeeded"] = False
+            metadata["synthesizer_status"] = "failed"
+
+        # 4. Check Final Answer for internal error signatures
+        final_answer = (
+            context.get("final_answer")
+            or (synth_data.get("final_answer", "") if synth_data else "")
+        )
+        if final_answer and isinstance(final_answer, str):
+            error_signatures = [
+                "synthesis could not be completed",
+                "synthesizer agent failed",
+                "llm output is not valid json",
+                "jsondecodeerror",
+                "validationerror",
+                "traceback (most recent call last)",
+                "returned failed status",
+                "resource_exhausted",
+                "quota exceeded",
+            ]
+            fa_lower = final_answer.lower()
+            if any(sig in fa_lower for sig in error_signatures):
+                metadata["final_answer_has_internal_error"] = True
+                metadata["synthesizer_succeeded"] = False
+
+        # 5. Identify critical failed agents
+        critical_names = {"researcher", "engineer", "guardian", "security", "synthesizer"}
+        metadata["critical_agents_failed"] = [a for a in metadata["failed_agents"] if a in critical_names]
+
+        return metadata
+
+    @classmethod
     def _build_user_prompt(cls, problem: str, context: Optional[dict]) -> str:
         """Construct the prompt sent to the LLM."""
         parts = [f"PROBLEM:\n{problem.strip()}"]
 
-        active_agents = cls._get_active_agents(context)
+        meta = cls._extract_execution_metadata(context)
+        active_agents = meta["successful_agents"]
+        failed_agents = meta["failed_agents"]
+
         if active_agents:
-            parts.append(f"ACTIVE WORKFLOW AGENTS IN CONTEXT: {', '.join(active_agents)}")
+            parts.append(f"SUCCESSFUL WORKFLOW AGENTS: {', '.join(active_agents)}")
+
+        if failed_agents:
+            parts.append(
+                f"FAILED WORKFLOW AGENTS: {', '.join(failed_agents)}\n"
+                f"RULE: Because agent(s) failed, execution_completeness must NOT be 1.0, and action MUST NOT be PROCEED."
+            )
+
+        if not meta["synthesizer_succeeded"]:
+            parts.append(
+                f"SYNTHESIZER STATUS: FAILED ({meta['synthesizer_status']})\n"
+                f"RULE: Synthesizer failed. You must NOT award execution_completeness = 1.0 and you must NOT issue PROCEED."
+            )
 
         context_str = cls._safe_serialize_context(context)
         if context_str:
@@ -256,10 +366,51 @@ class ReliabilityMonitorAgent:
             raise ValueError(f"Schema validation failed: {exc}") from exc
 
     @classmethod
-    def _enforce_scoring_policy(cls, result: ReliabilityMonitorResult) -> ReliabilityMonitorResult:
-        """Verify that dimension scores compute the aggregate score and align with levels and actions."""
-        if result.dimensions and result.reliability_score is None:
-            # Recompute weighted score for explainability
+    def _enforce_scoring_policy(
+        cls,
+        result: ReliabilityMonitorResult,
+        context: Optional[dict] = None,
+    ) -> ReliabilityMonitorResult:
+        """Verify that dimension scores compute the aggregate score and align with levels and actions.
+        Enforces deterministic safety and execution integrity gates that the LLM cannot override.
+        """
+        meta = cls._extract_execution_metadata(context)
+        failed_agents = meta["failed_agents"]
+        synthesizer_succeeded = meta["synthesizer_succeeded"]
+        final_answer_has_error = meta["final_answer_has_internal_error"]
+        critical_failed = meta["critical_agents_failed"]
+
+        # Ensure failed_agents list in result reflects actual execution state
+        for fa in failed_agents:
+            if fa not in result.failed_agents:
+                result.failed_agents.append(fa)
+
+        # -------------------------------------------------------------
+        # Hard Gate 1: Execution Completeness Dimension
+        # -------------------------------------------------------------
+        exec_dim = next((d for d in result.dimensions if d.name == "execution_completeness"), None)
+        if failed_agents or not synthesizer_succeeded:
+            if exec_dim:
+                if not synthesizer_succeeded:
+                    exec_dim.score = min(exec_dim.score, 0.35)
+                    exec_dim.status = DimensionStatus.FAILED
+                    exec_dim.reason = "Synthesizer failed to produce a verified structured synthesis."
+                elif len(failed_agents) >= 2 or critical_failed:
+                    exec_dim.score = min(exec_dim.score, 0.45)
+                    exec_dim.status = DimensionStatus.FAILED
+                    exec_dim.reason = f"Critical or multiple workflow agent(s) [{', '.join(failed_agents)}] failed."
+                else:
+                    exec_dim.score = min(exec_dim.score, 0.65)
+                    exec_dim.status = DimensionStatus.WARNING
+                    exec_dim.reason = f"Workflow agent(s) [{', '.join(failed_agents)}] failed during execution."
+            result.execution_completeness = f"Partial ({len(failed_agents) or 1} failed)"
+        elif exec_dim and not failed_agents:
+            result.execution_completeness = "Complete"
+
+        # -------------------------------------------------------------
+        # Dimension Weighted Score Recomputation
+        # -------------------------------------------------------------
+        if result.dimensions:
             weighted_sum = sum(
                 d.score * DIMENSION_WEIGHTS.get(d.name, d.weight) for d in result.dimensions
             )
@@ -269,14 +420,49 @@ class ReliabilityMonitorAgent:
 
         has_critical_failure = any(d.status == DimensionStatus.FAILED for d in result.dimensions)
 
-        if result.reliability_score is not None and result.reliability_level == ReliabilityLevel.UNKNOWN:
-            if result.reliability_score >= 0.80 and not has_critical_failure and not result.unresolved_conflicts:
+        # -------------------------------------------------------------
+        # Reliability Level Alignment
+        # -------------------------------------------------------------
+        if result.reliability_score is not None:
+            if result.reliability_score >= 0.80 and not has_critical_failure and not result.unresolved_conflicts and synthesizer_succeeded and not critical_failed:
                 result.reliability_level = ReliabilityLevel.HIGH
-            elif result.reliability_score >= 0.55 and not has_critical_failure:
+            elif result.reliability_score >= 0.55 and not (has_critical_failure and result.reliability_score < 0.60):
                 result.reliability_level = ReliabilityLevel.MEDIUM
             else:
                 result.reliability_level = ReliabilityLevel.LOW
 
+        # -------------------------------------------------------------
+        # DETERMINISTIC HARD GATES: Action Constraints
+        # The LLM must NEVER override these deterministic gates.
+        # -------------------------------------------------------------
+        # Gate A: Synthesizer Failure / Internal Error in Final Answer
+        if not synthesizer_succeeded or final_answer_has_error:
+            if result.action == ReliabilityAction.PROCEED:
+                result.action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
+            if "Synthesizer stage failed to complete successfully." not in result.concerns:
+                result.concerns.append("Synthesizer stage failed to complete successfully.")
+            if "Synthesis could not be verified; specialist outputs preserved." not in result.limitations:
+                result.limitations.append("Synthesis could not be verified; specialist outputs preserved.")
+
+        # Gate B: Critical Agent Failure or Multiple Agent Failures
+        if len(failed_agents) >= 2 or (critical_failed and not synthesizer_succeeded):
+            if result.action == ReliabilityAction.PROCEED:
+                result.action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
+            c_msg = f"Multiple or critical agents failed [{', '.join(failed_agents)}]; PROCEED prohibited."
+            if c_msg not in result.concerns:
+                result.concerns.append(c_msg)
+        elif failed_agents and result.action == ReliabilityAction.PROCEED:
+            result.action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
+            f_msg = f"Agent(s) [{', '.join(failed_agents)}] failed; delivering with limitations."
+            if f_msg not in result.concerns:
+                result.concerns.append(f_msg)
+
+        # Gate C: Severe Failure (< 0.45 score or critical security failure)
+        if result.reliability_score is not None and result.reliability_score < 0.45:
+            if "security" in failed_agents:
+                result.action = ReliabilityAction.BLOCK_OUTPUT
+
+        # Gate D: Unresolved Conflicts
         if result.unresolved_conflicts and result.action == ReliabilityAction.PROCEED:
             result.action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
 
@@ -286,9 +472,15 @@ class ReliabilityMonitorAgent:
     # Fallback & Mock builders
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _make_failed_output(error_message: str) -> ReliabilityMonitorResult:
+    @classmethod
+    def _make_failed_output(
+        cls,
+        error_message: str,
+        context: Optional[dict] = None,
+    ) -> ReliabilityMonitorResult:
         """Return a structured failure result adhering to the required schema."""
+        meta = cls._extract_execution_metadata(context) if context else {"failed_agents": []}
+        failed_list = meta.get("failed_agents", [])
         return ReliabilityMonitorResult(
             agent="reliability_monitor",
             status=AgentStatus.FAILED,
@@ -296,6 +488,8 @@ class ReliabilityMonitorAgent:
             reliability_level=ReliabilityLevel.UNKNOWN,
             action=ReliabilityAction.PROCEED_WITH_LIMITATIONS,
             concerns=[error_message],
+            failed_agents=failed_list,
+            execution_completeness=f"Partial ({len(failed_list)} failed)" if failed_list else None,
             limitations=["Reliability monitoring could not be completed; proceed with caution."],
         )
 
@@ -623,7 +817,7 @@ class ReliabilityMonitorAgent:
                 action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
                 rec = "Deliver output with prominent warnings regarding low reliability."
 
-        return ReliabilityMonitorResult(
+        mock_res = ReliabilityMonitorResult(
             agent="reliability_monitor",
             status=AgentStatus.COMPLETED,
             reliability_score=score,
@@ -646,3 +840,4 @@ class ReliabilityMonitorAgent:
             ],
             recommendation=rec,
         )
+        return cls._enforce_scoring_policy(mock_res, context=context)

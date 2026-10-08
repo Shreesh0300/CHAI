@@ -90,6 +90,9 @@ class SynthesizerResult(BaseModel):
     provenance: List[ProvenanceItem] = Field(
         default_factory=list, description="Internal traceability mapping statements to source agents."
     )
+    error_type: Optional[str] = Field(default=None, description="Internal structured error category if failed.")
+    error: Optional[str] = Field(default=None, description="Safe internal error description if failed.")
+    retryable: Optional[bool] = Field(default=None, description="Whether the failure is retryable.")
 
 
 class SynthesizerOutput(BaseModel):

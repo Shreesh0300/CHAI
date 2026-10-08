@@ -459,6 +459,10 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
         call_order.append("evaluator")
         return sample_evaluator_output()
 
+    async def mock_cr(*args, **kwargs):
+        call_order.append("conflict_resolver")
+        return MagicMock(status="completed", resolutions=[], unresolved_conflicts=[])
+
     async def mock_synth(*args, **kwargs):
         call_order.append("synthesizer")
         return SynthesisResult(
@@ -468,6 +472,10 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
             reconciled_solution="Test solution",
             final_text="Based on the comprehensive analysis of our specialized agents:\n\nTest final text",
         )
+
+    async def mock_rm(*args, **kwargs):
+        call_order.append("reliability_monitor")
+        return MagicMock(status="completed", action="PROCEED", concerns=[])
 
     def mock_val(*args, **kwargs):
         call_order.append("output_validator")
@@ -489,7 +497,9 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
         guardian=AsyncMock(run=mock_guard),
         security=AsyncMock(run=mock_sec),
         evaluator=AsyncMock(run=mock_eval),
+        conflict_resolver=AsyncMock(run=mock_cr),
         synthesizer=AsyncMock(synthesize=mock_synth),
+        reliability_monitor=AsyncMock(run=mock_rm),
         output_validator=MagicMock(validate=mock_val),
     )
 
@@ -508,7 +518,9 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
         "guardian",
         "security",
         "evaluator",
+        "conflict_resolver",
         "synthesizer",
+        "reliability_monitor",
         "output_validator",
     ]
     assert call_order == expected_order

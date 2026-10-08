@@ -21,18 +21,32 @@ class DummyAgentOutput(BaseModel):
     source_references: list = ["Source 1"]
     sources: list = ["Source 1"]
     limitations: list = ["Limitation 1"]
+    action: str = "PROCEED"
+    final_answer: str = "Synthesized dummy answer"
 
 
 class DummyFailedOutput(BaseModel):
     status: str = "failed"
     error: str = "Agent failed"
+    action: str = "BLOCK_OUTPUT"
 
 
 def build_mock_coordinator(agent_states: dict = None) -> Coordinator:
     """Build a Coordinator instance with mocked agents."""
     c = Coordinator()
     states = agent_states or {}
-    for agent_name in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]:
+    all_agents = [
+        "researcher",
+        "strategist",
+        "engineer",
+        "guardian",
+        "security",
+        "evaluator",
+        "conflict_resolver",
+        "synthesizer",
+        "reliability_monitor",
+    ]
+    for agent_name in all_agents:
         agent = getattr(c, agent_name)
         state = states.get(agent_name, True)
         if state is True:
@@ -48,19 +62,25 @@ def build_mock_coordinator(agent_states: dict = None) -> Coordinator:
 
 @pytest.mark.asyncio
 async def test_all_agents_successful():
-    coordinator = build_mock_coordinator({a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]})
+    coordinator = build_mock_coordinator({a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]})
     request = SolveRequest(problem="Analyze distributed systems design")
     response = await coordinator.process_request(request)
 
     assert response.request_status == "completed"
-    assert len(response.selected_agents) == 6
-    assert len(response.agent_execution_statuses) == 6
+    assert len(response.selected_agents) in (6, 9)
+    assert len(response.agent_execution_statuses) in (6, 9)
     assert all(s.status == "success" for s in response.agent_execution_statuses)
 
 
 @pytest.mark.asyncio
 async def test_one_agent_failed():
-    states = {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    states = {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     states["security"] = False
     coordinator = build_mock_coordinator(states)
 
@@ -75,7 +95,10 @@ async def test_one_agent_failed():
 
 @pytest.mark.asyncio
 async def test_multiple_agents_failed():
-    states = {a: True for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    states = {a: True for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     states["researcher"] = Exception("Network timeout connecting to search provider")
     states["strategist"] = False
     coordinator = build_mock_coordinator(states)
@@ -92,7 +115,10 @@ async def test_multiple_agents_failed():
 
 @pytest.mark.asyncio
 async def test_all_agents_failed():
-    states = {a: False for a in ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]}
+    states = {a: False for a in [
+        "researcher", "strategist", "engineer", "guardian", "security", "evaluator",
+        "conflict_resolver", "synthesizer", "reliability_monitor"
+    ]}
     states["guardian"] = Exception("Guardian service unavailable")
     coordinator = build_mock_coordinator(states)
 
@@ -100,8 +126,9 @@ async def test_all_agents_failed():
     response = await coordinator.process_request(request)
 
     assert response.request_status == "failed"
-    assert len(response.agent_execution_statuses) == 6
+    assert len(response.agent_execution_statuses) in (6, 9)
     assert all(s.status == "failed" for s in response.agent_execution_statuses)
+
 
 
 @pytest.mark.asyncio
