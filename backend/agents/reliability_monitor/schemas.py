@@ -121,6 +121,9 @@ class ReliabilityMonitorResult(BaseModel):
     limitations: List[str] = Field(
         default_factory=list, description="Limitations that should accompany the final answer."
     )
+    recommended_corrections: List[str] = Field(
+        default_factory=list, description="Specific corrections or benchmark re-labelings for the final answer."
+    )
     recommendation: Optional[str] = Field(
         None, description="Actionable recommendation for downstream output handling."
     )
@@ -134,6 +137,7 @@ class ReliabilityMonitorResult(BaseModel):
         "assumptions",
         "missing_information",
         "limitations",
+        "recommended_corrections",
         mode="before",
     )
     @classmethod
@@ -169,6 +173,7 @@ class ReliabilityMonitorResult(BaseModel):
                 "execution_completeness",
                 "overconfidence_detected",
                 "limitations",
+                "recommended_corrections",
                 "recommendation",
             }
             if not any(k in recognized for k in data.keys()):

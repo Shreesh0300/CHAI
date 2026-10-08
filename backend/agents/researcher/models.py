@@ -35,8 +35,34 @@ class ResearchResult(BaseModel):
     Strict output contract for the Researcher Agent.
     Encapsulates problem analysis without designing downstream solutions.
     """
-    agent: Literal["researcher"] = "researcher"
-    status: Literal["completed", "failed"] = "completed"
+    agent: Literal["researcher"] = Field(
+        default="researcher",
+        description="Exact canonical machine identifier. MUST be exactly 'researcher'."
+    )
+    status: Literal["completed", "failed"] = Field(
+        default="completed",
+        description="Execution status ('completed' or 'failed')."
+    )
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def _coerce_agent_identifier(cls, v: Any) -> str:
+        if isinstance(v, str):
+            clean = v.strip().lower()
+            if clean in ("researcher", "researcher agent", "researcher_agent", "research agent"):
+                return "researcher"
+        return v
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_status(cls, v: Any) -> str:
+        if isinstance(v, str):
+            clean = v.strip().lower()
+            if clean in ("success", "completed", "ok"):
+                return "completed"
+            if clean in ("failed", "failure", "error"):
+                return "failed"
+        return v
     key_findings: list[str] = Field(
         default_factory=list,
         description="Core observations and factual findings derived from the problem and provided information"
@@ -60,6 +86,10 @@ class ResearchResult(BaseModel):
     sources: list[Source] = Field(
         default_factory=list,
         description="Verified provenance sources. Empty if no external sources were supplied or accessed."
+    )
+    evidence_source_quality: Optional[str] = Field(
+        default=None,
+        description="Assessment of evidence and source quality, noting any gaps in empirical data"
     )
 
 

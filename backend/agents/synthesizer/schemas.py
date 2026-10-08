@@ -64,7 +64,14 @@ class SynthesizerResult(BaseModel):
     agent: str = Field(default="synthesizer", description="Agent identifier.")
     status: AgentStatus = Field(default=AgentStatus.COMPLETED, description="Execution status.")
 
-    final_answer: str = Field(..., description="The unified, coherent, user-facing final outcome.")
+    final_answer: str = Field(
+        ...,
+        description=(
+            "Comprehensive, multi-paragraph, well-structured final answer formatted in clean Markdown. "
+            "For complex requests, must be substantial and detailed with headings (##), paragraphs, bullets, "
+            "a clear recommendation with rationale, and actionable next steps. Never a single compressed paragraph."
+        ),
+    )
 
     key_decisions: List[KeyDecision] = Field(
         default_factory=list, description="Key decisions made in formulating the final answer."

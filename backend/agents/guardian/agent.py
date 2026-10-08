@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Optional
+from typing import Optional, Any
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
@@ -48,8 +48,9 @@ _MAX_CONTEXT_CHARS: int = 4000
 class GuardianAgent:
     """CHAI Guardian Agent — safety, ethics, privacy, and responsible AI specialist."""
 
-    def __init__(self) -> None:
+    def __init__(self, llm_client: Optional[Any] = None) -> None:
         self.system_prompt: str = SYSTEM_PROMPT
+        self._llm_client = llm_client
 
     # ------------------------------------------------------------------
     # Public interface consumed by the Coordinator
@@ -89,10 +90,11 @@ class GuardianAgent:
         user_prompt = self._build_user_prompt(problem, context)
 
         # ---- Call LLM with bounded retry ----
+        client = self._llm_client or llm_client
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                response_text = await llm_client.generate_content(
+                response_text = await client.generate_content(
                     prompt=user_prompt,
                     system_instruction=self.system_prompt,
                 )

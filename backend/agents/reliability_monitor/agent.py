@@ -78,8 +78,13 @@ DIMENSION_WEIGHTS: Dict[str, float] = {
 class ReliabilityMonitorAgent:
     """CHAI Reliability Monitor Agent — reasoning-quality and trust-assessment checkpoint."""
 
-    def __init__(self, system_prompt: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        system_prompt: Optional[str] = None,
+        llm_client: Optional[Any] = None,
+    ) -> None:
         self.system_prompt: str = system_prompt or SYSTEM_PROMPT
+        self._llm_client = llm_client
 
     # ------------------------------------------------------------------
     # Public interface
@@ -119,12 +124,14 @@ class ReliabilityMonitorAgent:
         user_prompt = self._build_user_prompt(problem, context)
 
         # ---- Call LLM with bounded retry ----
+        client = self._llm_client or llm_client
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                response_text = await llm_client.generate_content(
+                response_text = await client.generate_content(
                     prompt=user_prompt,
                     system_instruction=self.system_prompt,
+                    response_schema=ReliabilityMonitorResult,
                 )
 
                 # Handle mock mode (API key not configured)
@@ -403,17 +410,25 @@ class ReliabilityMonitorAgent:
         dimensions.append(dim_exec)
 
         # -------------------------------------------------------------
-        # 2. Evidence Grounding
+        # 2. Evidence Grounding & Numerical Discipline
         # -------------------------------------------------------------
         # Detect ungrounded statistics or fabricated metrics in final answer
-        if "40% cheaper" in final_answer or "30% faster" in final_answer or "unsupported" in final_answer.lower():
+        has_unsupported_metric = any(
+            pat in final_answer.lower()
+            for pat in [
+                "40% cheaper", "30% faster", "unsupported",
+                "5-10 discretionary hours", "5–10 discretionary hours",
+                "5-10 hours/week", "5–10 hours/week", "5-10 hours",
+            ]
+        )
+        if has_unsupported_metric:
             dim_ev = ReliabilityDimension(
                 name="evidence_grounding",
                 score=0.50,
                 weight=DIMENSION_WEIGHTS["evidence_grounding"],
                 status=DimensionStatus.WARNING,
                 reason="Synthesized answer contains numerical claims or metrics lacking supporting agent findings.",
-                evidence="Unsupported percentage metric detected in final answer.",
+                evidence="Unsupported quantitative threshold or metric detected in final answer.",
             )
             unsupported_claims.append(
                 UnsupportedClaimFinding(
@@ -644,5 +659,8 @@ class ReliabilityMonitorAgent:
             limitations=[
                 "Reliability assessment grounded strictly in observable workflow telemetry.",
             ],
+            recommended_corrections=[
+                "Re-label ungrounded numerical assertions as planning benchmarks or remove invented thresholds."
+            ] if unsupported_claims else [],
             recommendation=rec,
         )

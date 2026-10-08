@@ -48,8 +48,9 @@ _MAX_CONTEXT_CHARS: int = 4000
 class EngineerAgent:
     """CHAI Engineer Agent — technical / engineering analysis specialist."""
 
-    def __init__(self) -> None:
+    def __init__(self, llm_client: Any = None) -> None:
         self.system_prompt: str = SYSTEM_PROMPT
+        self.llm_client = llm_client
 
     # ------------------------------------------------------------------
     # Public interface consumed by the Coordinator
@@ -93,10 +94,51 @@ class EngineerAgent:
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                response_text = await llm_client.generate_content(
-                    prompt=user_prompt,
-                    system_instruction=self.system_prompt,
-                )
+                current_prompt = user_prompt
+                if attempt > 1 and last_error:
+                    clean_err = str(last_error).split("\n")[0]
+                    missing_hints = []
+                    err_str = str(last_error).lower()
+                    if "ai_ml_design" in err_str or "overview" in err_str:
+                        missing_hints.append("- Populating 'overview' in 'ai_ml_design' (e.g. 'overview': 'AI/ML subsystem overview')")
+                    if "architecture" in err_str:
+                        missing_hints.append("- Populating 'overview' in 'architecture'")
+                    if "database" in err_str:
+                        missing_hints.append("- Populating 'overview' in 'database_design'")
+                    if "problem_understanding" in err_str:
+                        missing_hints.append("- Mandatory 'problem_understanding' must be non-empty")
+                    hints_block = ("\nSpecific corrections required:\n" + "\n".join(missing_hints)) if missing_hints else ""
+
+                    current_prompt = (
+                        f"{user_prompt}\n\n"
+                        f"CRITICAL CONTRACT CORRECTION (ATTEMPT {attempt}):\n"
+                        f"Your previous response failed schema validation: {clean_err}\n"
+                        f"You MUST return strictly valid JSON matching the EngineerResult schema.{hints_block}\n"
+                        f"Ensure every required field is present and non-empty. Specifically:\n"
+                        f"- 'problem_understanding' is mandatory.\n"
+                        f"- If 'ai_ml_design' is included, 'overview' is strictly required.\n"
+                        f"- If 'architecture' is included, 'overview' is strictly required.\n"
+                        f"- If 'database_design' is included, 'overview' is strictly required.\n"
+                        f"- 'agent' MUST be 'engineer' and 'status' MUST be 'completed'.\n"
+                        f"Output ONLY the JSON object."
+                    )
+
+                client_to_use = self.llm_client or llm_client
+                try:
+                    response_text = await client_to_use.generate_content(
+                        prompt=current_prompt,
+                        system_instruction=self.system_prompt,
+                        response_schema=EngineerResult,
+                    )
+                except Exception as struct_err:
+                    err_str = str(struct_err)
+                    if "[QUOTA_ERROR]" in err_str or "[AUTH_ERROR]" in err_str:
+                        raise
+                    logger.warning(f"Engineer structured schema call failed, trying raw prompt fallback: {err_str}")
+                    response_text = await client_to_use.generate_content(
+                        prompt=current_prompt,
+                        system_instruction=self.system_prompt,
+                    )
 
                 # Handle mock mode (API key not configured)
                 if "Mock response" in response_text:
@@ -118,8 +160,9 @@ class EngineerAgent:
 
         # All attempts exhausted
         logger.error(f"Engineer Agent: all {_MAX_ATTEMPTS} attempts failed. Last error: {last_error!r}")
+        clean_msg = str(last_error).split("\n")[0] if last_error else "Unknown error"
         return self._make_failed_output(
-            f"Engineer Agent failed after {_MAX_ATTEMPTS} attempts: {last_error}"
+            f"Engineer Agent failed after {_MAX_ATTEMPTS} attempts: {clean_msg}"
         )
 
     # ------------------------------------------------------------------

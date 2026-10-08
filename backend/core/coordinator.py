@@ -41,6 +41,7 @@ from backend.agents.synthesizer.agent import SynthesizerAgent
 from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent
 from backend.agents.reliability_monitor.schemas import ReliabilityAction
 from backend.validation.output_validator import OutputValidator, OutputValidationResult
+from backend.shared.debug_observability import log_debug_agent_output
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -167,6 +168,7 @@ class CHAICoordinator:
         # -------------------------------------------------------------
         if route == "simple" or (request.selected_agents is not None and not selected_agents):
             direct_text = f"Direct response provided for: {request.problem}"
+            log_debug_agent_output("final answer", direct_text)
 
             return FinalResponse(
                 request_id=getattr(request, "request_id", None) or state.get("request_id"),
@@ -273,6 +275,7 @@ class CHAICoordinator:
                 if str(status_val).lower() in ("completed", "success"):
                     agent_outputs["researcher"] = res_dump
                     register_agent_result(state, "researcher", res_output)
+                    log_debug_agent_output("researcher output", res_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="researcher",
@@ -370,6 +373,7 @@ class CHAICoordinator:
                         register_agent_result(state, "strategist", strat_output)
                     except Exception:
                         pass
+                    log_debug_agent_output("strategist output", strat_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="strategist",
@@ -444,6 +448,7 @@ class CHAICoordinator:
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
                     agent_outputs["engineer"] = eng_dump
                     register_agent_result(state, "engineer", eng_output)
+                    log_debug_agent_output("engineer output", eng_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="engineer",
@@ -519,6 +524,7 @@ class CHAICoordinator:
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
                     agent_outputs["guardian"] = guard_dump
                     register_agent_result(state, "guardian", guard_output)
+                    log_debug_agent_output("guardian output", guard_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="guardian",
@@ -596,6 +602,7 @@ class CHAICoordinator:
                     agent_outputs["security"] = sec_dump
                     security_findings = sec_dump
                     register_agent_result(state, "security", sec_output)
+                    log_debug_agent_output("security output", sec_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="security",
@@ -665,10 +672,11 @@ class CHAICoordinator:
                     or (eval_dump.get("evaluator_result") or {}).get("status")
                 )
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
-                if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
+                if val_str.lower() in ("completed", "success", "partial") or "completed" in val_str.lower() or "partial" in val_str.lower():
                     agent_outputs["evaluator"] = eval_dump
                     evaluation_findings = eval_dump
                     register_agent_result(state, "evaluator", eval_output)
+                    log_debug_agent_output("evaluator output", eval_output)
                     execution_statuses.append(
                         AgentExecutionStatus(
                             agent_name="evaluator",
@@ -721,9 +729,14 @@ class CHAICoordinator:
                 })
 
         # 7. Conflict Resolver
-        if "conflict_resolver" in selected_agents:
+        should_run_cr = (request.selected_agents is None) or ("conflict_resolver" in selected_agents)
+        if should_run_cr:
             t0 = time.monotonic()
-            context_for_cr = {"all_outputs": agent_outputs}
+            context_for_cr = {
+                "all_outputs": agent_outputs,
+                "failed_agents": [s.agent_name for s in execution_statuses if s.status.lower() in ("failed", "error")],
+                "execution_statuses": [s.model_dump() for s in execution_statuses],
+            }
             try:
                 try:
                     cr_output = await self.conflict_resolver.run(request.problem, context=context_for_cr)
@@ -734,15 +747,17 @@ class CHAICoordinator:
                 agent_outputs["conflict_resolver"] = cr_dump
                 status_val = getattr(cr_output, "status", None) or cr_dump.get("status")
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
+                log_debug_agent_output("conflict resolver output", cr_output)
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
-                    execution_statuses.append(
-                        AgentExecutionStatus(
-                            agent_name="conflict_resolver",
-                            status="success",
-                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                            timestamp=_iso_now(),
+                    if "conflict_resolver" in selected_agents:
+                        execution_statuses.append(
+                            AgentExecutionStatus(
+                                agent_name="conflict_resolver",
+                                status="success",
+                                duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                                timestamp=_iso_now(),
+                            )
                         )
-                    )
                     execution_trace.append({
                         "agent": "conflict_resolver",
                         "status": "completed",
@@ -750,15 +765,16 @@ class CHAICoordinator:
                         "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     })
                 else:
-                    execution_statuses.append(
-                        AgentExecutionStatus(
-                            agent_name="conflict_resolver",
-                            status="failed",
-                            error="Conflict Resolver returned failed status",
-                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                            timestamp=_iso_now(),
+                    if "conflict_resolver" in selected_agents:
+                        execution_statuses.append(
+                            AgentExecutionStatus(
+                                agent_name="conflict_resolver",
+                                status="failed",
+                                error="Conflict Resolver returned failed status",
+                                duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                                timestamp=_iso_now(),
+                            )
                         )
-                    )
                     execution_trace.append({
                         "agent": "conflict_resolver",
                         "status": "failed",
@@ -768,15 +784,16 @@ class CHAICoordinator:
                     })
             except Exception as e:
                 logger.error(f"Conflict Resolver execution error: {e}")
-                execution_statuses.append(
-                    AgentExecutionStatus(
-                        agent_name="conflict_resolver",
-                        status="failed",
-                        error=str(e),
-                        duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                        timestamp=_iso_now(),
+                if "conflict_resolver" in selected_agents:
+                    execution_statuses.append(
+                        AgentExecutionStatus(
+                            agent_name="conflict_resolver",
+                            status="failed",
+                            error=str(e),
+                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                            timestamp=_iso_now(),
+                        )
                     )
-                )
                 execution_trace.append({
                     "agent": "conflict_resolver",
                     "status": "failed",
@@ -793,7 +810,9 @@ class CHAICoordinator:
             context_for_synth = {
                 "all_outputs": agent_outputs,
                 "execution_statuses": execution_statuses,
+                "failed_agents": [s.agent_name for s in execution_statuses if s.status.lower() in ("failed", "error")],
             }
+            log_debug_agent_output("synthesizer input", context_for_synth)
             try:
                 if hasattr(self.synthesizer, "synthesize"):
                     synth_output = await self.synthesizer.synthesize(request.problem, context=context_for_synth)
@@ -909,12 +928,14 @@ class CHAICoordinator:
         # 9. Reliability Monitor
         rm_action: Optional[ReliabilityAction] = None
         rm_dump: Dict[str, Any] = {}
-        if "reliability_monitor" in selected_agents:
+        should_run_rm = (request.selected_agents is None) or ("reliability_monitor" in selected_agents)
+        if should_run_rm:
             t0 = time.monotonic()
             context_for_rm = {
                 "all_outputs": agent_outputs,
                 "final_answer": final_answer,
                 "execution_statuses": execution_statuses,
+                "failed_agents": [s.agent_name for s in execution_statuses if s.status.lower() in ("failed", "error")],
             }
             try:
                 try:
@@ -927,14 +948,16 @@ class CHAICoordinator:
                 status_val = getattr(rm_output, "status", None) or rm_dump.get("status")
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
-                    execution_statuses.append(
-                        AgentExecutionStatus(
-                            agent_name="reliability_monitor",
-                            status="success",
-                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                            timestamp=_iso_now(),
+                    log_debug_agent_output("reliability monitor output", rm_output)
+                    if "reliability_monitor" in selected_agents:
+                        execution_statuses.append(
+                            AgentExecutionStatus(
+                                agent_name="reliability_monitor",
+                                status="success",
+                                duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                                timestamp=_iso_now(),
+                            )
                         )
-                    )
                     execution_trace.append({
                         "agent": "reliability_monitor",
                         "status": "completed",
@@ -942,15 +965,16 @@ class CHAICoordinator:
                         "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     })
                 else:
-                    execution_statuses.append(
-                        AgentExecutionStatus(
-                            agent_name="reliability_monitor",
-                            status="failed",
-                            error="Reliability Monitor returned failed status",
-                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                            timestamp=_iso_now(),
+                    if "reliability_monitor" in selected_agents:
+                        execution_statuses.append(
+                            AgentExecutionStatus(
+                                agent_name="reliability_monitor",
+                                status="failed",
+                                error="Reliability Monitor returned failed status",
+                                duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                                timestamp=_iso_now(),
+                            )
                         )
-                    )
                     execution_trace.append({
                         "agent": "reliability_monitor",
                         "status": "failed",
@@ -969,15 +993,16 @@ class CHAICoordinator:
                         rm_action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
             except Exception as e:
                 logger.error(f"Reliability Monitor execution error: {e}")
-                execution_statuses.append(
-                    AgentExecutionStatus(
-                        agent_name="reliability_monitor",
-                        status="failed",
-                        error=str(e),
-                        duration_ms=round((time.monotonic() - t0) * 1000, 2),
-                        timestamp=_iso_now(),
+                if "reliability_monitor" in selected_agents:
+                    execution_statuses.append(
+                        AgentExecutionStatus(
+                            agent_name="reliability_monitor",
+                            status="failed",
+                            error=str(e),
+                            duration_ms=round((time.monotonic() - t0) * 1000, 2),
+                            timestamp=_iso_now(),
+                        )
                     )
-                )
                 execution_trace.append({
                     "agent": "reliability_monitor",
                     "status": "failed",
@@ -1058,10 +1083,18 @@ class CHAICoordinator:
 
         # 10. Output Validator (Structural & Operational Output Gate)
         t0 = time.monotonic()
+        failed_agents = [s.agent_name for s in execution_statuses if s.status.lower() in ("failed", "failure", "error")]
+        completed_agents = [s.agent_name for s in execution_statuses if s.status.lower() in ("success", "completed")]
+
         try:
             validation_result = self.output_validator.validate(
                 delivered_answer,
-                context={"all_outputs": agent_outputs, "selected_agents": selected_agents},
+                context={
+                    "all_outputs": agent_outputs,
+                    "selected_agents": selected_agents,
+                    "failed_agents": failed_agents,
+                    "execution_statuses": [s.model_dump() for s in execution_statuses],
+                },
             )
             execution_trace.append({
                 "agent": "output_validator",
@@ -1104,6 +1137,19 @@ class CHAICoordinator:
                 f"Validation findings: {err_reasons}"
             )
 
+        # Prepend transparent degraded notice if any agent failed
+        if failed_agents and not gate_blocked and not gate_requested_info and is_valid_val:
+            completed_str = ", ".join(a.capitalize() for a in completed_agents)
+            failed_str = ", ".join(a.capitalize() for a in failed_agents)
+            transparency_header = (
+                f"STATUS: PARTIAL (DEGRADED)\n"
+                f"Completed: {completed_str}\n"
+                f"Failed: {failed_str}\n"
+                f"Degraded: Analysis for failed components ({failed_str}) could not be completed and related conclusions should be treated as provisional.\n\n"
+            )
+            if "STATUS: PARTIAL" not in final_deliverable and "STATUS: DEGRADED" not in final_deliverable:
+                final_deliverable = f"{transparency_header}{final_deliverable}"
+
         # Determine overall request status semantics
         if not is_valid_val:
             overall_request_status = "failed"
@@ -1114,15 +1160,15 @@ class CHAICoordinator:
         elif not selected_agents:
             overall_request_status = "completed"
         else:
-            total_count = len(selected_agents)
-            success_count = sum(1 for s in execution_statuses if s.status.lower() in ("success", "completed"))
-            failure_count = sum(1 for s in execution_statuses if s.status.lower() in ("failed", "failure", "error"))
+            total_count = len(execution_statuses)
+            success_count = len(completed_agents)
+            failure_count = len(failed_agents)
 
-            if success_count == total_count:
+            if failure_count > 0:
+                overall_request_status = "partial" if success_count > 0 else "failed"
+            elif success_count == total_count and total_count > 0:
                 overall_request_status = "completed"
-            elif success_count > 0 and failure_count > 0:
-                overall_request_status = "partial"
-            elif failure_count == total_count or success_count == 0:
+            elif failure_count == total_count:
                 overall_request_status = "failed"
             else:
                 overall_request_status = "partial" if success_count > 0 else "failed"
@@ -1135,6 +1181,7 @@ class CHAICoordinator:
             # When specific agents are requested, preserve all executed outputs
             final_agent_outputs = agent_outputs
 
+        log_debug_agent_output("final answer", final_deliverable)
         return FinalResponse(
             request_id=getattr(request, "request_id", None) or state.get("request_id"),
             request_status=overall_request_status,

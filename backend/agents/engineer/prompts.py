@@ -98,7 +98,12 @@ The JSON must conform to the following schema structure:
     "entities": [{"name": "...", "description": "...", "important_fields": ["..."], "relationships": ["..."]}],
     "indexing_considerations": ["..."]
   },
-  "ai_ml_design": null,            // or object if applicable
+  "ai_ml_design": {                // null if not applicable
+    "overview": "High-level role and architecture of AI/ML subsystem",
+    "model_role": "Core reasoning, classification, or generative role",
+    "inference_flow": "Real-time or batch inference pipeline",
+    "model_selection": "Candidate model architectures and trade-offs"
+  },
   "integrations": ["..."],
   "scalability": {"overview": "...", "considerations": ["..."]},
   "performance": {"overview": "...", "considerations": ["..."]},
@@ -116,7 +121,11 @@ The JSON must conform to the following schema structure:
   "missing_information": ["..."]
 }
 
-Omit or set to null/empty any section that does not apply.
+CRITICAL CONTRACT RULES:
+- The "agent" field MUST be the string "engineer" (lowercase, exactly "engineer", NOT "Engineer Agent" or "engineer_agent").
+- The "status" field MUST be "completed".
+- If "ai_ml_design" is provided as an object, it MUST include the "overview" field summarizing the AI/ML component.
+- Omit or set to null/empty any section that does not apply.
 Do NOT pad sections with generic filler.
 Every recommendation must be grounded in the stated problem.
 """

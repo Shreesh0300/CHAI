@@ -242,6 +242,25 @@ class OutputValidator:
         if fence_count % 2 != 0:
             warnings.append("Unclosed markdown code block fence detected.")
 
+        # -------------------------------------------------------------
+        # 8. Execution State & False Claims Validation
+        # -------------------------------------------------------------
+        if context and isinstance(context, dict):
+            failed_agents = context.get("failed_agents", [])
+            if isinstance(failed_agents, list):
+                for fa in failed_agents:
+                    fa_str = str(fa).strip().lower()
+                    if not fa_str:
+                        continue
+                    false_claim_pat = re.compile(
+                        rf"\b{re.escape(fa_str)}\s+(?:agent\s+)?(?:has\s+)?(?:successfully\s+)?(?:completed|verified|determined|approved|confirmed|designed|validated)\b",
+                        re.IGNORECASE,
+                    )
+                    if false_claim_pat.search(trimmed):
+                        errors.append(
+                            f"Output falsely asserts that failed agent '{fa}' succeeded, completed, or validated findings."
+                        )
+
         is_valid = len(errors) == 0
 
         # When valid, sanitized_output is the clean text.

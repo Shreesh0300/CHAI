@@ -796,3 +796,239 @@ class TestSynthesizerFinalAnswerBehavior:
         assert not result.final_answer.startswith("Researcher said:")
         assert not "Engineer said:" in result.final_answer
         assert "edge-first" in result.final_answer.lower()
+
+
+# ==============================================================================
+# 10. DETAILED STRUCTURED OUTPUT & SYNTHESIZER BEHAVIOR (NEW REQUIREMENTS)
+# ==============================================================================
+
+class TestSynthesizerDetailedStructuredOutput:
+    """Validates rich, multi-paragraph, domain-adaptive, and un-hallucinated final answers."""
+
+    @pytest.mark.asyncio
+    async def test_complex_personal_decision_structure(self):
+        """1. Complex personal decision: multiple paragraphs, headings, both options, trade-offs, recommendation, next steps, no hallucinated AI or financial dependency."""
+        agent = SynthesizerAgent()
+        problem = "My parents want me to get a government job but I want to do business. What should I do?"
+
+        # Verify user prompt generation requirements
+        user_prompt = agent._build_user_prompt(problem, None)
+        assert "government job vs business must not be changed to ai" in user_prompt.lower()
+        assert "final_answer` must be a detailed, multi-paragraph response" in user_prompt.lower()
+
+        # Test synthesizer output generation (internal mock builder)
+        mock_result = agent._make_mock_output(problem)
+        fa = mock_result.final_answer
+        fa_lower = fa.lower()
+
+        paragraphs = [p.strip() for p in fa.split("\n\n") if p.strip()]
+        assert len(paragraphs) >= 4, f"Expected multiple paragraphs, got {len(paragraphs)}"
+        assert "##" in fa, "Expected markdown headings (##) in complex personal decision"
+        assert len(paragraphs) > 1, "Must NOT be a single-paragraph answer"
+
+        assert "government" in fa_lower, "Must discuss government job option"
+        assert "business" in fa_lower, "Must discuss business/entrepreneurship option"
+        assert "trade-off" in fa_lower or "tradeoff" in fa_lower, "Must address trade-offs"
+        assert "risk" in fa_lower, "Must address risks"
+        assert "recommend" in fa_lower, "Must provide a recommendation"
+        assert "step" in fa_lower or "next" in fa_lower, "Must provide practical next steps"
+
+        assert "artificial intelligence" not in fa_lower and "pursue ai" not in fa_lower, "Must NOT invent AI career"
+        assert "financially dependent" not in fa_lower, "Must NOT invent financial dependency"
+
+        # Test through run with mocked LLM response
+        mock_response = make_valid_llm_json_response(final_answer=fa)
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem)
+
+        assert len([p for p in result.final_answer.split("\n\n") if p.strip()]) >= 4
+        assert "government" in result.final_answer.lower()
+        assert "business" in result.final_answer.lower()
+
+    @pytest.mark.asyncio
+    async def test_complex_technical_problem_structure(self, sample_six_agent_context):
+        """2. Complex technical problem: preserves architecture, alternatives, trade-offs, security, recommendation, implementation plan."""
+        agent = SynthesizerAgent()
+        problem = "Design a production-ready RAG system for a university knowledge platform"
+
+        mock_result = agent._make_mock_output(problem, sample_six_agent_context)
+        fa = mock_result.final_answer
+        fa_lower = fa.lower()
+
+        assert "architecture" in fa_lower, "Must preserve technical architecture"
+        assert "alternative" in fa_lower or "trade-off" in fa_lower or "tradeoff" in fa_lower, "Must preserve alternatives or trade-offs"
+        assert "security" in fa_lower or "safeguard" in fa_lower, "Must preserve security controls"
+        assert "recommend" in fa_lower, "Must provide clear recommendation"
+        assert "implementation" in fa_lower or "roadmap" in fa_lower or "phase" in fa_lower, "Must provide implementation plan"
+        assert "##" in fa
+        assert len([p for p in fa.split("\n\n") if p.strip()]) >= 4
+
+        mock_response = make_valid_llm_json_response(final_answer=fa)
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem, context=sample_six_agent_context)
+
+        assert "architecture" in result.final_answer.lower()
+        assert "recommendation" in result.final_answer.lower()
+
+    @pytest.mark.asyncio
+    async def test_research_problem_structure(self):
+        """3. Research problem: preserves evidence, competing explanations, contradictions, uncertainty, conclusion."""
+        agent = SynthesizerAgent()
+        problem = "Investigate research evidence on neural scaling laws, competing explanations, and empirical contradictions"
+
+        mock_result = agent._make_mock_output(problem)
+        fa = mock_result.final_answer
+        fa_lower = fa.lower()
+
+        assert "evidence" in fa_lower, "Must discuss evidence"
+        assert "competing" in fa_lower or "explanation" in fa_lower, "Must address competing explanations"
+        assert "contradiction" in fa_lower, "Must address contradictions"
+        assert "uncertain" in fa_lower or "limitation" in fa_lower, "Must address uncertainty/limitations"
+        assert "conclusion" in fa_lower or "investigation" in fa_lower, "Must provide conclusion"
+        assert "##" in fa, "Must use headings"
+        assert len([p for p in fa.split("\n\n") if p.strip()]) >= 3
+
+        mock_response = make_valid_llm_json_response(final_answer=fa)
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem)
+
+        assert "evidence" in result.final_answer.lower()
+        assert "contradiction" in result.final_answer.lower()
+
+    @pytest.mark.asyncio
+    async def test_business_problem_structure(self):
+        """4. Business problem: preserves alternatives, trade-offs, recommendation, execution plan."""
+        agent = SynthesizerAgent()
+        problem = "Formulate a commercial monetization and market expansion business strategy"
+
+        mock_result = agent._make_mock_output(problem)
+        fa = mock_result.final_answer
+        fa_lower = fa.lower()
+
+        assert "option" in fa_lower or "alternative" in fa_lower, "Must evaluate alternatives"
+        assert "trade-off" in fa_lower or "tradeoff" in fa_lower or "risk" in fa_lower, "Must evaluate trade-offs and risks"
+        assert "recommend" in fa_lower, "Must provide strategic recommendation"
+        assert "execution" in fa_lower or "plan" in fa_lower or "phase" in fa_lower, "Must provide execution plan"
+        assert "##" in fa
+        assert len([p for p in fa.split("\n\n") if p.strip()]) >= 3
+
+        mock_response = make_valid_llm_json_response(final_answer=fa)
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem)
+
+        assert "recommendation" in result.final_answer.lower()
+        assert "execution" in result.final_answer.lower()
+
+    @pytest.mark.asyncio
+    async def test_simple_question_not_essay(self):
+        """5. Simple question: does NOT produce a 2000-word essay for a simple question."""
+        agent = SynthesizerAgent()
+        problem = "What is a Python list?"
+
+        # Check prompt instructions for simple query
+        user_prompt = agent._build_user_prompt(problem, None)
+        assert "simple informational query" in user_prompt.lower()
+        assert "concise" in user_prompt.lower()
+
+        # Check mock generation
+        mock_result = agent._make_mock_output(problem)
+        fa = mock_result.final_answer
+        word_count = len(fa.split())
+        paragraphs = [p.strip() for p in fa.split("\n\n") if p.strip()]
+
+        assert word_count < 150, f"Simple query produced too many words: {word_count}"
+        assert len(paragraphs) <= 2, f"Simple query produced too many paragraphs: {len(paragraphs)}"
+        assert "python" in fa.lower()
+        assert "list" in fa.lower()
+
+        # Check run with mocked LLM response
+        mock_response = make_valid_llm_json_response(final_answer=fa, key_decisions=[])
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem)
+
+        assert len(result.final_answer.split()) < 150
+        assert len([p for p in result.final_answer.split("\n\n") if p.strip()]) <= 2
+
+    @pytest.mark.asyncio
+    async def test_explicit_user_requirements_visibly_addressed(self):
+        """6. Explicit requirements: all requested elements are visibly addressed in final answer."""
+        agent = SynthesizerAgent()
+        problem = "Compare Postgres and MongoDB, explain the trade-offs, identify contradictions, choose the best option, and give an implementation plan."
+
+        # Verify prompt builder instructs model to visibly address all explicit requirements
+        user_prompt = agent._build_user_prompt(problem, None)
+        assert "explicit" in user_prompt.lower() or "faithful" in user_prompt.lower()
+
+        detailed_response = (
+            "## Comparison: Postgres vs MongoDB\n\n"
+            "Postgres is an ACID-compliant relational database, while MongoDB is a document database.\n\n"
+            "## Key Trade-offs\n\n"
+            "- Postgres prioritizes transactional integrity over dynamic schema flexibility.\n"
+            "- MongoDB prioritizes rapid prototyping over multi-table relational constraints.\n\n"
+            "## Contradictions Identified\n\n"
+            "While schemaless design is praised for speed, it creates downstream schema enforcement friction.\n\n"
+            "## Best Option & Recommendation\n\n"
+            "Postgres is recommended due to structural consistency and relational safety requirements.\n\n"
+            "## Implementation Plan\n\n"
+            "1. Define schema definitions.\n"
+            "2. Establish database connection pooling.\n"
+            "3. Execute integration migrations."
+        )
+        mock_response = make_valid_llm_json_response(final_answer=detailed_response)
+
+        with patch("backend.agents.synthesizer.agent.llm_client.generate_content", new=AsyncMock(return_value=mock_response)):
+            result = await agent.run(problem)
+
+        fa_lower = result.final_answer.lower()
+        assert "postgres" in fa_lower
+        assert "mongodb" in fa_lower
+        assert "trade-off" in fa_lower or "tradeoff" in fa_lower
+        assert "contradiction" in fa_lower
+        assert "recommend" in fa_lower or "best option" in fa_lower
+        assert "implementation" in fa_lower or "plan" in fa_lower
+
+    @pytest.mark.asyncio
+    async def test_no_hallucinated_user_details(self):
+        """7. No hallucinated user details: details not in input are not introduced as fact."""
+        agent = SynthesizerAgent()
+        problem = "My parents want me to get a government job but I want to do business. What should I do?"
+        mock_result = agent._make_mock_output(problem)
+
+        fa_lower = mock_result.final_answer.lower()
+        assert "artificial intelligence" not in fa_lower
+        assert "pursue ai" not in fa_lower
+        assert "$100,000" not in fa_lower
+        assert "financially dependent" not in fa_lower
+
+        assert "PRESERVE ORIGINAL USER REQUEST & NO HALLUCINATED USER DETAILS" in agent.system_prompt
+        assert "Do not invent personal circumstances" in agent.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_formatting_multi_paragraph_and_headings(self):
+        """8. Formatting: complex response contains multiple paragraphs, headings, and lists rather than dense prose."""
+        agent = SynthesizerAgent()
+        problem = "Evaluate architectural trade-offs between monolithic and microservice designs"
+        mock_result = agent._make_mock_output(problem)
+
+        fa = mock_result.final_answer
+        paragraphs = [p.strip() for p in fa.split("\n\n") if p.strip()]
+
+        assert len(paragraphs) >= 3, "Complex response must contain at least 3 distinct paragraphs"
+        assert "##" in fa, "Complex response must use Markdown headings (##)"
+        assert "- " in fa or "1. " in fa, "Complex response must use bullet points or numbered lists"
+
+    def test_strip_generic_openings_utility(self):
+        """Utility test: strips generic agent pipeline preamble."""
+        agent = SynthesizerAgent()
+
+        text1 = "Based on the comprehensive analysis of our specialized agents:\n\nNavigating a career dilemma..."
+        assert agent._strip_generic_openings(text1).startswith("Navigating a career dilemma...")
+
+        text2 = "After analyzing the outputs of all specialized agents:\n\nThe core trade-off..."
+        assert agent._strip_generic_openings(text2).startswith("The core trade-off...")
+
+        text3 = "Our specialized agents have determined that: We recommend Option A."
+        assert agent._strip_generic_openings(text3).startswith("We recommend Option A.")
+
+        text4 = "You are balancing two different forms of security: Government vs Business."
+        assert agent._strip_generic_openings(text4) == text4

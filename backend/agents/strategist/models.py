@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List, Union
+from typing import Literal, Optional, List, Union, Any
 from pydantic import BaseModel, Field, field_validator
 from backend.agents.researcher.models import ResearchResult
 
@@ -27,6 +27,27 @@ class StrategyResult(BaseModel):
     """
     agent: Literal["strategist"] = "strategist"
     status: Literal["completed", "failed"] = "completed"
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> str:
+        if isinstance(v, str):
+            cleaned = v.strip().lower().replace("_agent", "").replace(" agent", "").replace("-agent", "")
+            if cleaned in ("strategist", "strategy"):
+                return "strategist"
+        return v
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: Any) -> str:
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in ("completed", "success", "ok"):
+                return "completed"
+            if cleaned in ("failed", "failure", "error"):
+                return "failed"
+        return v
+
     strategy: str = Field(default="", description="High-level practical strategic thesis and direction")
     priorities: list[str] = Field(
         default_factory=list,
@@ -43,6 +64,26 @@ class StrategyResult(BaseModel):
     success_metrics: list[str] = Field(
         default_factory=list,
         description="Concrete, measurable metrics to validate success"
+    )
+    options: list[str] = Field(
+        default_factory=list,
+        description="Distinct strategic options evaluated for decision-oriented problems"
+    )
+    decision_criteria: list[str] = Field(
+        default_factory=list,
+        description="Explicit decision criteria used to evaluate options"
+    )
+    dependencies_and_unknowns: list[str] = Field(
+        default_factory=list,
+        description="Key dependencies, unverified assumptions, or missing information affecting the strategy"
+    )
+    risks: list[str] = Field(
+        default_factory=list,
+        description="Strategic, operational, or execution risks"
+    )
+    conditional_triggers: list[str] = Field(
+        default_factory=list,
+        description="Conditions under which the recommendation would change"
     )
 
 

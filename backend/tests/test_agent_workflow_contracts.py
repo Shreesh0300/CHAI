@@ -26,6 +26,8 @@ from backend.agents.engineer.schemas import EngineerResult, EngineerOutput, Agen
 from backend.agents.guardian.schemas import GuardianResult, GuardianOutput, AgentStatus as GuardStatus
 from backend.agents.security.models import SecurityResult
 from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput, AgentStatus as EvalStatus
+from backend.agents.conflict_resolver.schemas import ConflictResolutionResult, AgentStatus as CRStatus
+from backend.agents.reliability_monitor.schemas import ReliabilityMonitorResult, ReliabilityAction, ReliabilityLevel, AgentStatus as RMStatus
 from backend.core.contracts import (
     AgentResult,
     ResearcherInputContract,
@@ -481,6 +483,31 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
     info_service = MagicMock()
     info_service.acquire = AsyncMock(side_effect=mock_info)
 
+    mock_cr = AsyncMock()
+    mock_cr.run = AsyncMock(return_value=ConflictResolutionResult(
+        agent="conflict_resolver",
+        status=CRStatus.COMPLETED,
+        resolutions=[],
+        unresolved_conflicts=[],
+        decision_basis=[],
+        assumptions=[],
+        missing_information=[],
+        limitations=[],
+        conflicts_considered=[],
+        provenance=[],
+    ))
+
+    mock_rm = AsyncMock()
+    mock_rm.run = AsyncMock(return_value=ReliabilityMonitorResult(
+        agent="reliability_monitor",
+        status=RMStatus.COMPLETED,
+        reliability_score=0.95,
+        reliability_level=ReliabilityLevel.HIGH,
+        action=ReliabilityAction.PROCEED,
+        concerns=[],
+        limitations=[],
+    ))
+
     coordinator = Coordinator(
         information_acquisition=info_service,
         researcher=AsyncMock(run=mock_res),
@@ -489,7 +516,9 @@ async def test_12_complete_complex_workflow_executes_in_exact_order():
         guardian=AsyncMock(run=mock_guard),
         security=AsyncMock(run=mock_sec),
         evaluator=AsyncMock(run=mock_eval),
+        conflict_resolver=mock_cr,
         synthesizer=AsyncMock(synthesize=mock_synth),
+        reliability_monitor=mock_rm,
         output_validator=MagicMock(validate=mock_val),
     )
 

@@ -43,6 +43,8 @@ from backend.agents.evaluator.schemas import (
     RequirementStatus,
     EvaluationSeverity,
 )
+from backend.agents.conflict_resolver.schemas import ConflictResolutionResult, AgentStatus as CRStatus
+from backend.agents.reliability_monitor.schemas import ReliabilityMonitorResult, ReliabilityAction, ReliabilityLevel, AgentStatus as RMStatus
 
 
 # ==============================================================================
@@ -299,6 +301,31 @@ async def test_3_researcher_to_strategist_data_flow():
     mock_strat = AsyncMock()
     mock_strat.run = mock_strat_run
 
+    mock_cr = AsyncMock()
+    mock_cr.run = AsyncMock(return_value=ConflictResolutionResult(
+        agent="conflict_resolver",
+        status=CRStatus.COMPLETED,
+        resolutions=[],
+        unresolved_conflicts=[],
+        decision_basis=[],
+        assumptions=[],
+        missing_information=[],
+        limitations=[],
+        conflicts_considered=[],
+        provenance=[],
+    ))
+
+    mock_rm = AsyncMock()
+    mock_rm.run = AsyncMock(return_value=ReliabilityMonitorResult(
+        agent="reliability_monitor",
+        status=RMStatus.COMPLETED,
+        reliability_score=0.95,
+        reliability_level=ReliabilityLevel.HIGH,
+        action=ReliabilityAction.PROCEED,
+        concerns=[],
+        limitations=[],
+    ))
+
     coordinator = Coordinator(
         researcher=mock_res,
         strategist=mock_strat,
@@ -306,6 +333,8 @@ async def test_3_researcher_to_strategist_data_flow():
         guardian=AsyncMock(run=AsyncMock(return_value=make_sample_guardian_output(problem))),
         security=AsyncMock(run=AsyncMock(return_value=make_sample_security_output(problem))),
         evaluator=AsyncMock(run=AsyncMock(return_value=make_sample_evaluator_output(problem))),
+        conflict_resolver=mock_cr,
+        reliability_monitor=mock_rm,
     )
 
     response = await coordinator.process_request(SolveRequest(problem=problem))

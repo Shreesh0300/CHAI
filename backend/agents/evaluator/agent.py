@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Optional
+from typing import Optional, Any
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
@@ -49,8 +49,9 @@ _MAX_CONTEXT_CHARS: int = 12000
 class EvaluatorAgent:
     """CHAI Evaluator Agent — multi-agent consistency, coverage, and quality evaluator."""
 
-    def __init__(self) -> None:
+    def __init__(self, llm_client: Optional[Any] = None) -> None:
         self.system_prompt: str = SYSTEM_PROMPT
+        self._llm_client = llm_client
 
     # ------------------------------------------------------------------
     # Public interface consumed by the Coordinator
@@ -90,10 +91,11 @@ class EvaluatorAgent:
         user_prompt = self._build_user_prompt(problem, context)
 
         # ---- Call LLM with bounded retry ----
+        client = self._llm_client or llm_client
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                response_text = await llm_client.generate_content(
+                response_text = await client.generate_content(
                     prompt=user_prompt,
                     system_instruction=self.system_prompt,
                 )
@@ -106,7 +108,7 @@ class EvaluatorAgent:
                 # Parse and validate
                 result = self._parse_response(response_text)
                 active_agents = self._get_active_agents(context)
-                result = self._sanitize_result(result, active_agents)
+                result = self._sanitize_result(result, active_agents, context)
 
                 elapsed = time.monotonic() - start_time
                 logger.info(f"Evaluator Agent: completed in {elapsed:.2f}s (attempt {attempt}).")
@@ -169,30 +171,73 @@ class EvaluatorAgent:
         cls,
         result: EvaluatorResult,
         active_agents: list[str],
+        context: Optional[dict] = None,
     ) -> EvaluatorResult:
-        """Enforce that EvaluatorResult does not cite absent agents in structured fields.
+        """Enforce that EvaluatorResult does not cite absent agents in structured fields
+        and explicitly reports missing or failed upstream agents."""
+        if active_agents:
+            active_set = {a.strip().lower() for a in active_agents if a.strip()}
+            for c in result.conflicts:
+                if c.agents_involved:
+                    c.agents_involved = [a for a in c.agents_involved if a.strip().lower() in active_set]
 
-        Filters ``agents_involved``, ``source_agents``, and ``source_agent`` to only
-        allow agents actually present in ``active_agents``.
-        """
-        if not active_agents:
-            return result
+            for inc in result.inconsistencies:
+                if inc.source_agents:
+                    inc.source_agents = [a for a in inc.source_agents if a.strip().lower() in active_set]
 
-        active_set = {a.strip().lower() for a in active_agents if a.strip()}
-        if not active_set:
-            return result
+            for u in result.unsupported_claims:
+                if u.source_agent and u.source_agent.strip().lower() not in active_set:
+                    u.source_agent = None
 
-        for c in result.conflicts:
-            if c.agents_involved:
-                c.agents_involved = [a for a in c.agents_involved if a.strip().lower() in active_set]
+        # Check for explicitly failed upstream specialist agents
+        if context and isinstance(context, dict):
+            failed_agents_list: list[str] = []
+            if "failed_agents" in context and isinstance(context["failed_agents"], list):
+                for a in context["failed_agents"]:
+                    if a and str(a).lower() not in failed_agents_list:
+                        failed_agents_list.append(str(a).lower())
 
-        for inc in result.inconsistencies:
-            if inc.source_agents:
-                inc.source_agents = [a for a in inc.source_agents if a.strip().lower() in active_set]
+            source = context.get("all_outputs") if isinstance(context.get("all_outputs"), dict) else context
+            for k, v in source.items():
+                if isinstance(v, dict):
+                    st = str(v.get("status", "")).lower()
+                    if st in ("failed", "failure", "error"):
+                        k_clean = str(k).lower()
+                        if k_clean not in failed_agents_list:
+                            failed_agents_list.append(k_clean)
 
-        for u in result.unsupported_claims:
-            if u.source_agent and u.source_agent.strip().lower() not in active_set:
-                u.source_agent = None
+            if "execution_statuses" in context and isinstance(context["execution_statuses"], list):
+                for es in context["execution_statuses"]:
+                    if isinstance(es, dict) and str(es.get("status", "")).lower() in ("failed", "failure", "error"):
+                        an = str(es.get("agent_name", "")).lower()
+                        if an and an not in failed_agents_list:
+                            failed_agents_list.append(an)
+
+            if failed_agents_list:
+                result.status = AgentStatus.PARTIAL
+                from backend.agents.evaluator.schemas import QualityIssueItem, RequirementCoverageItem, RequirementStatus
+                for f_agent in failed_agents_list:
+                    already_noted_qi = any(f_agent in q.issue.lower() for q in result.quality_issues)
+                    if not already_noted_qi:
+                        result.quality_issues.append(
+                            QualityIssueItem(
+                                issue=f"Upstream agent '{f_agent}' encountered execution failure.",
+                                category="dependency",
+                                impact=f"Cross-agent evaluation of {f_agent} specifications could not be verified.",
+                                recommendation=f"Re-run {f_agent} agent or inspect upstream failure logs.",
+                            )
+                        )
+                    already_noted_rc = any(f_agent in r.requirement.lower() for r in result.requirement_coverage)
+                    if not already_noted_rc:
+                        result.requirement_coverage.append(
+                            RequirementCoverageItem(
+                                requirement=f"{f_agent.capitalize()} analysis",
+                                status=RequirementStatus.NOT_ADDRESSED,
+                                gap=f"{f_agent.capitalize()} output was absent or encountered execution errors.",
+                            )
+                        )
+                if "partial" not in result.overall_assessment.lower() and "degraded" not in result.overall_assessment.lower():
+                    result.overall_assessment += f" Note: Upstream outputs from [{', '.join(failed_agents_list)}] encountered failures; evaluation operates in degraded mode."
 
         return result
 
@@ -317,4 +362,5 @@ class EvaluatorAgent:
             assumptions=["[Mock] No live LLM available; returning placeholder evaluation data."],
             missing_information=["[Mock] Full agent outputs and GEMINI_API_KEY required for detailed conflict detection."],
         )
+        result = cls._sanitize_result(result, active, context)
         return EvaluatorOutput.from_evaluator_result(result)

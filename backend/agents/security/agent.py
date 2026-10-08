@@ -15,7 +15,7 @@ from backend.agents.security.prompts import (
     build_security_prompt,
 )
 from backend.shared.llm_client import (
-    get_gemini_chat_model,
+    llm_client,
     get_gemini_api_key,
     get_default_gemini_model,
 )
@@ -35,22 +35,6 @@ class SecurityAgent:
     def __init__(self, llm: Optional[Any] = None, model_name: Optional[str] = None):
         self.model_name = model_name or get_default_gemini_model()
         self._llm = llm
-
-    def _get_llm(self):
-        """Lazily initializes the LangChain Gemini chat model if not provided."""
-        if self._llm is not None:
-            return self._llm
-
-        api_key = get_gemini_api_key()
-        if not api_key:
-            return None
-
-        try:
-            self._llm = get_gemini_chat_model(model_name=self.model_name, api_key=api_key)
-            return self._llm
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini LLM client in SecurityAgent: {e}")
-            return None
 
     def _make_mock_output(self, problem: str) -> SecurityResult:
         """Returns a plausible mock SecurityResult when mock mode is enabled."""
@@ -98,6 +82,9 @@ class SecurityAgent:
                 "[Mock] Automated threat modeling pending live LLM verification",
             ],
         )
+
+    def _get_llm(self) -> Any:
+        return self._llm or llm_client
 
     async def run(
         self,
@@ -170,9 +157,17 @@ class SecurityAgent:
             return self._make_mock_output(problem)
 
         # 3. Obtain LLM client
-        llm = self._get_llm()
-        if llm is None:
-            logger.error("GEMINI_API_KEY is missing or invalid. Unable to invoke Gemini model.")
+        client = self._get_llm()
+        if client is None:
+            logger.error("[CONFIG_ERROR] No LLM client available.")
+            return SecurityResult(
+                agent="security",
+                status="failed",
+            )
+
+        api_key = get_gemini_api_key()
+        if not api_key and not self._llm and client is llm_client:
+            logger.error("[CONFIG_ERROR] GEMINI_API_KEY is missing. Unable to invoke Gemini model.")
             return SecurityResult(
                 agent="security",
                 status="failed",
@@ -186,23 +181,27 @@ class SecurityAgent:
             strategy=parsed_strategy,
             engineering=engineering,
         )
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
-        ]
 
         # 5. Invoke LLM with structured output or fallback
         try:
             result = None
-            if hasattr(llm, "with_structured_output"):
+            if hasattr(client, "with_structured_output"):
+                messages = [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                ]
                 try:
-                    structured_llm = llm.with_structured_output(SecurityResult)
+                    structured_llm = client.with_structured_output(SecurityResult)
                     result = await structured_llm.ainvoke(messages)
                 except Exception as struct_err:
                     logger.warning(f"with_structured_output failed ({struct_err}), falling back to direct invocation.")
-                    result = await llm.ainvoke(messages)
+                    result = await client.ainvoke(messages)
             else:
-                result = await llm.ainvoke(messages)
+                result = await client.generate_content(
+                    prompt=user_prompt,
+                    system_instruction=SYSTEM_PROMPT,
+                    response_schema=SecurityResult,
+                )
 
             # 6. Parse and validate response
             return self._parse_llm_response(result)

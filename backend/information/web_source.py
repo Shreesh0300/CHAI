@@ -7,6 +7,7 @@ and provenance attribution behind the InformationSource contract.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional, List, Dict, Any
 
 from backend.information.source import BaseInformationSource, SOURCE_TYPE_WEB
@@ -19,6 +20,30 @@ from backend.information.provenance import build_information_item
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def formulate_search_query(query: str, max_chars: int = 180) -> str:
+    """Extract a concise, high-signal search query from potentially long prompt text."""
+    cleaned = (query or "").strip()
+    if not cleaned or len(cleaned) <= max_chars:
+        return cleaned
+
+    # Try taking the first sentence if long prompt with multiple sentences
+    sentences = re.split(r"[.!?\n]", cleaned)
+    first_sentence = sentences[0].strip() if sentences else ""
+    if 15 <= len(first_sentence) <= max_chars:
+        return first_sentence
+
+    # Otherwise clamp to word boundary
+    words = cleaned.split()
+    trimmed: List[str] = []
+    curr = 0
+    for w in words:
+        if curr + len(w) + 1 > max_chars:
+            break
+        trimmed.append(w)
+        curr += len(w) + 1
+    return " ".join(trimmed) if trimmed else cleaned[:max_chars]
 
 
 class WebAcquisitionSource(BaseInformationSource):
@@ -58,11 +83,12 @@ class WebAcquisitionSource(BaseInformationSource):
         if not cleaned_query:
             return []
 
-        logger.info(f"WebAcquisitionSource: searching for '{cleaned_query[:60]}...'")
+        search_query = formulate_search_query(cleaned_query)
+        logger.info(f"WebAcquisitionSource: searching for '{search_query[:60]}...'")
 
         try:
             search_results: List[SearchResult] = await self.search_provider.search(
-                query=cleaned_query,
+                query=search_query,
                 max_results=self.max_results,
             )
         except Exception as e:
@@ -81,21 +107,30 @@ class WebAcquisitionSource(BaseInformationSource):
             try:
                 # 1. Fetch
                 fetch_res = await self.fetcher.fetch(target_url)
+                raw_text = ""
+                extracted_title = sr.title
+                status_code = fetch_res.status_code
+
                 if not fetch_res.success:
                     err_note = f"Failed to fetch '{target_url}': {fetch_res.error or 'Unknown error'}"
                     self.last_errors.append(err_note)
                     logger.warning(f"WebAcquisitionSource: {err_note}")
-                    continue
-
-                # 2. Extract
-                extracted = self.extractor.extract(fetch_res.html, fallback_url=target_url)
-                raw_text = extracted.text
-                if not raw_text or len(raw_text.strip()) < 10:
-                    if sr.snippet and len(sr.snippet.strip()) >= 5:
+                    # Gracefully fall back to search snippet if available
+                    if sr.snippet and len(sr.snippet.strip()) >= 20:
                         raw_text = f"Overview: {sr.snippet}"
                     else:
-                        self.last_errors.append(f"Empty readable content from '{target_url}'.")
                         continue
+                else:
+                    # 2. Extract
+                    extracted = self.extractor.extract(fetch_res.html, fallback_url=target_url)
+                    raw_text = extracted.text
+                    extracted_title = extracted.title or sr.title
+                    if not raw_text or len(raw_text.strip()) < 10:
+                        if sr.snippet and len(sr.snippet.strip()) >= 5:
+                            raw_text = f"Overview: {sr.snippet}"
+                        else:
+                            self.last_errors.append(f"Empty readable content from '{target_url}'.")
+                            continue
 
                 # 3. Clean
                 cleaned_text = self.cleaner.clean(raw_text)
@@ -106,10 +141,10 @@ class WebAcquisitionSource(BaseInformationSource):
                 # 4. Attach Provenance
                 item = build_information_item(
                     content=cleaned_text,
-                    title=extracted.title or sr.title,
+                    title=extracted_title,
                     url=target_url,
                     query=cleaned_query,
-                    status_code=fetch_res.status_code,
+                    status_code=status_code,
                     metadata={"snippet": sr.snippet},
                 )
                 items.append(item)
@@ -123,4 +158,4 @@ class WebAcquisitionSource(BaseInformationSource):
         return items
 
 
-__all__ = ["WebAcquisitionSource"]
+__all__ = ["WebAcquisitionSource", "formulate_search_query"]

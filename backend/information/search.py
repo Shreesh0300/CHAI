@@ -21,6 +21,19 @@ def extract_domain(url: str) -> str:
         return "web"
 
 
+DISALLOWED_SEARCH_DOMAINS = {
+    "merriam-webster.com",
+    "dictionary.com",
+    "thesaurus.com",
+    "canva.com",
+    "wiktionary.org",
+    "facebook.com",
+    "instagram.com",
+    "pinterest.com",
+    "tiktok.com",
+}
+
+
 class BaseSearchProvider(ABC):
     """
     Abstract interface for search providers.
@@ -235,6 +248,11 @@ class TavilySearchProvider(BaseSearchProvider):
             snippet = (item.get("content") or item.get("snippet") or "").strip()
             domain = extract_domain(url)
 
+            # Filter out non-technical/generic dictionary or media platforms
+            if any(domain == d or domain.endswith("." + d) for d in DISALLOWED_SEARCH_DOMAINS):
+                logger.debug(f"TavilySearchProvider: skipping non-technical/disallowed domain '{domain}'")
+                continue
+
             meta: Dict[str, Any] = {}
             if "score" in item and item["score"] is not None:
                 meta["score"] = item["score"]
@@ -291,4 +309,5 @@ __all__ = [
     "get_search_provider",
     "get_web_search_api_key",
     "extract_domain",
+    "DISALLOWED_SEARCH_DOMAINS",
 ]

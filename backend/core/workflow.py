@@ -29,7 +29,9 @@ from backend.agents.security.models import SecurityResult
 from backend.agents.security.agent import SecurityAgent
 from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput
 from backend.agents.evaluator.agent import EvaluatorAgent
+from backend.agents.conflict_resolver.agent import ConflictResolverAgent
 from backend.synthesis.synthesizer import Synthesizer
+from backend.agents.reliability_monitor.agent import ReliabilityMonitorAgent
 from backend.validation.output_validator import OutputValidator
 from backend.core.contracts import (
     ResearcherInputContract,
@@ -43,6 +45,7 @@ from backend.core.contracts import (
     ValidationResult,
 )
 from backend.shared.llm_client import llm_client, get_gemini_api_key
+from backend.shared.debug_observability import log_debug_agent_output
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +57,9 @@ AGENT_REGISTRY = {
     "guardian": GuardianAgent,
     "security": SecurityAgent,
     "evaluator": EvaluatorAgent,
+    "conflict_resolver": ConflictResolverAgent,
     "synthesizer": Synthesizer,
+    "reliability_monitor": ReliabilityMonitorAgent,
     "output_validator": OutputValidator,
 }
 
@@ -82,7 +87,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     guard_agent = instances.get("guardian") or GuardianAgent()
     sec_agent = instances.get("security") or SecurityAgent()
     eval_agent = instances.get("evaluator") or EvaluatorAgent()
+    cr_agent = instances.get("conflict_resolver") or ConflictResolverAgent()
     synth_agent = instances.get("synthesizer") or Synthesizer()
+    rm_agent = instances.get("reliability_monitor") or ReliabilityMonitorAgent()
     validator_agent = instances.get("output_validator") or instances.get("validator") or OutputValidator()
 
     # -----------------------------------------------------------------
@@ -166,6 +173,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "details": "Direct answer generated without invoking any specialized agents.",
             }
 
+            log_debug_agent_output("final answer", direct_text)
             return {
                 "agent_outputs": {},
                 "final_answer": direct_text,
@@ -294,6 +302,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
 
             # Atomically register canonical output
             reg = register_agent_result(state, "researcher", res_output)
+            log_debug_agent_output("researcher output", res_output)
             res_dict = reg["agent_outputs"]["researcher"]
 
             # Extract source labels safely
@@ -380,6 +389,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 }
 
             reg = register_agent_result(state, "strategist", strat_output)
+            log_debug_agent_output("strategist output", strat_output)
             trace_item = {
                 "agent": "strategist",
                 "status": "completed",
@@ -441,6 +451,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 }
 
             reg = register_agent_result(state, "engineer", eng_output)
+            log_debug_agent_output("engineer output", eng_output)
             trace_item = {
                 "agent": "engineer",
                 "status": "completed",
@@ -503,6 +514,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 }
 
             reg = register_agent_result(state, "guardian", guard_output)
+            log_debug_agent_output("guardian output", guard_output)
             trace_item = {
                 "agent": "guardian",
                 "status": "completed",
@@ -568,6 +580,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 }
 
             reg = register_agent_result(state, "security", sec_output)
+            log_debug_agent_output("security output", sec_output)
             trace_item = {
                 "agent": "security",
                 "status": "completed",
@@ -627,6 +640,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
 
             conflicts = getattr(eval_output, "detected_contradictions", [])
             reg = register_agent_result(state, "evaluator", eval_output)
+            log_debug_agent_output("evaluator output", eval_output)
             trace_item = {
                 "agent": "evaluator",
                 "status": "completed",
@@ -658,7 +672,70 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             }
 
     # -----------------------------------------------------------------
-    # Node 9: Synthesizer Node
+    # Node 9: Conflict Resolver Node
+    # -----------------------------------------------------------------
+    async def conflict_resolver_node(state: CHAIState) -> Dict[str, Any]:
+        start = time.monotonic()
+        problem = state.get("problem", "")
+        context_for_cr = {
+            "all_outputs": state.get("agent_outputs", {}),
+            "failed_agents": state.get("failed_agents", []),
+            "conflicts": state.get("conflicts", []),
+        }
+        logger.info(f"ConflictResolverNode: resolving potential trade-offs and conflicts for '{problem}'")
+
+        try:
+            cr_output = await cr_agent.run(problem=problem, context=context_for_cr)
+            duration = (time.monotonic() - start) * 1000
+            is_failed = getattr(cr_output, "status", "") == "failed"
+
+            if is_failed:
+                trace_item = {
+                    "agent": "conflict_resolver",
+                    "status": "failed",
+                    "timestamp": _iso_now(),
+                    "duration_ms": round(duration, 2),
+                    "error": "Conflict Resolver reported failure status",
+                }
+                return {
+                    "failed_agents": state.get("failed_agents", []) + ["conflict_resolver"],
+                    "errors": state.get("errors", []) + ["Conflict Resolver reported failure status"],
+                    "execution_trace": state.get("execution_trace", []) + [trace_item],
+                }
+
+            reg = register_agent_result(state, "conflict_resolver", cr_output)
+            log_debug_agent_output("conflict resolver output", cr_output)
+            trace_item = {
+                "agent": "conflict_resolver",
+                "status": "completed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "details": f"Arbitrated {len(getattr(cr_output, 'resolutions', []))} conflict(s)",
+            }
+            return {
+                **reg,
+                "completed_agents": state.get("completed_agents", []) + ["conflict_resolver"],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+        except Exception as e:
+            logger.error(f"ConflictResolverNode failed: {e}")
+            duration = (time.monotonic() - start) * 1000
+            err_msg = f"Conflict Resolver failed: {type(e).__name__}"
+            trace_item = {
+                "agent": "conflict_resolver",
+                "status": "failed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "error": err_msg,
+            }
+            return {
+                "failed_agents": state.get("failed_agents", []) + ["conflict_resolver"],
+                "errors": state.get("errors", []) + [err_msg],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+
+    # -----------------------------------------------------------------
+    # Node 10: Synthesizer Node
     # -----------------------------------------------------------------
     async def synthesizer_node(state: CHAIState) -> Dict[str, Any]:
         start = time.monotonic()
@@ -684,6 +761,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             conflicts=state.get("conflicts", []),
             all_agent_results=state.get("agent_outputs", {}),
         )
+        log_debug_agent_output("synthesizer input", synth_input)
 
         try:
             synth_output = await synth_agent.synthesize(
@@ -742,7 +820,73 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             }
 
     # -----------------------------------------------------------------
-    # Node 10: Output Validator Node
+    # Node 11: Reliability Monitor Node
+    # -----------------------------------------------------------------
+    async def reliability_monitor_node(state: CHAIState) -> Dict[str, Any]:
+        start = time.monotonic()
+        problem = state.get("problem", "")
+        synth_res = get_canonical_agent_result(state, "synthesizer")
+        final_answer = getattr(synth_res, "final_text", "") or getattr(synth_res, "reconciled_solution", "") or getattr(synth_res, "summary", "") or ""
+        context_for_rm = {
+            "all_outputs": state.get("agent_outputs", {}),
+            "final_answer": final_answer,
+            "failed_agents": state.get("failed_agents", []),
+            "completed_agents": state.get("completed_agents", []),
+        }
+        logger.info(f"ReliabilityMonitorNode: assessing output reliability for '{problem}'")
+
+        try:
+            rm_output = await rm_agent.run(problem=problem, context=context_for_rm)
+            duration = (time.monotonic() - start) * 1000
+            is_failed = getattr(rm_output, "status", "") == "failed"
+
+            if is_failed:
+                trace_item = {
+                    "agent": "reliability_monitor",
+                    "status": "failed",
+                    "timestamp": _iso_now(),
+                    "duration_ms": round(duration, 2),
+                    "error": "Reliability Monitor reported failure status",
+                }
+                return {
+                    "failed_agents": state.get("failed_agents", []) + ["reliability_monitor"],
+                    "errors": state.get("errors", []) + ["Reliability Monitor reported failure status"],
+                    "execution_trace": state.get("execution_trace", []) + [trace_item],
+                }
+
+            reg = register_agent_result(state, "reliability_monitor", rm_output)
+            log_debug_agent_output("reliability monitor output", rm_output)
+            trace_item = {
+                "agent": "reliability_monitor",
+                "status": "completed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "details": f"Reliability level: {getattr(rm_output, 'reliability_level', 'UNKNOWN')}",
+            }
+            return {
+                **reg,
+                "completed_agents": state.get("completed_agents", []) + ["reliability_monitor"],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+        except Exception as e:
+            logger.error(f"ReliabilityMonitorNode failed: {e}")
+            duration = (time.monotonic() - start) * 1000
+            err_msg = f"Reliability Monitor failed: {type(e).__name__}"
+            trace_item = {
+                "agent": "reliability_monitor",
+                "status": "failed",
+                "timestamp": _iso_now(),
+                "duration_ms": round(duration, 2),
+                "error": err_msg,
+            }
+            return {
+                "failed_agents": state.get("failed_agents", []) + ["reliability_monitor"],
+                "errors": state.get("errors", []) + [err_msg],
+                "execution_trace": state.get("execution_trace", []) + [trace_item],
+            }
+
+    # -----------------------------------------------------------------
+    # Node 12: Output Validator Node
     # -----------------------------------------------------------------
     async def output_validator_node(state: CHAIState) -> Dict[str, Any]:
         start = time.monotonic()
@@ -758,6 +902,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 val_output = ValidationResult.model_validate(val_output)
 
             reg = register_agent_result(state, "output_validator", val_output)
+            log_debug_agent_output("final answer", val_output.sanitized_text)
             trace_item = {
                 "agent": "output_validator",
                 "status": "completed",
@@ -814,7 +959,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     graph.add_node("guardian", guardian_node)
     graph.add_node("security", security_node)
     graph.add_node("evaluator", evaluator_node)
+    graph.add_node("conflict_resolver", conflict_resolver_node)
     graph.add_node("synthesizer", synthesizer_node)
+    graph.add_node("reliability_monitor", reliability_monitor_node)
     graph.add_node("output_validator", output_validator_node)
 
     # Flow definitions
@@ -845,8 +992,10 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     graph.add_edge("engineer", "guardian")
     graph.add_edge("guardian", "security")
     graph.add_edge("security", "evaluator")
-    graph.add_edge("evaluator", "synthesizer")
-    graph.add_edge("synthesizer", "output_validator")
+    graph.add_edge("evaluator", "conflict_resolver")
+    graph.add_edge("conflict_resolver", "synthesizer")
+    graph.add_edge("synthesizer", "reliability_monitor")
+    graph.add_edge("reliability_monitor", "output_validator")
     graph.add_edge("output_validator", END)
 
     return graph.compile()

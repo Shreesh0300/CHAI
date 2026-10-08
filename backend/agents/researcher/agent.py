@@ -14,7 +14,7 @@ from backend.agents.researcher.prompts import (
     build_research_prompt,
 )
 from backend.shared.llm_client import (
-    get_gemini_chat_model,
+    llm_client,
     get_gemini_api_key,
     get_default_gemini_model,
 )
@@ -34,22 +34,6 @@ class ResearcherAgent:
         self.model_name = model_name or get_default_gemini_model()
         self._llm = llm
 
-    def _get_llm(self):
-        """Lazily initializes the LangChain Gemini chat model if not provided."""
-        if self._llm is not None:
-            return self._llm
-
-        api_key = get_gemini_api_key()
-        if not api_key:
-            return None
-
-        try:
-            self._llm = get_gemini_chat_model(model_name=self.model_name, api_key=api_key)
-            return self._llm
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini LLM client: {e}")
-            return None
-
     def _make_mock_output(self, problem: str, sources: List[Source]) -> ResearchResult:
         """Returns a plausible mock ResearchResult when mock mode is enabled."""
         return ResearchResult(
@@ -59,9 +43,13 @@ class ResearcherAgent:
             user_needs=["[Mock] Low-bandwidth accessibility", "[Mock] Reliable user experience"],
             constraints=["[Mock] Unreliable connectivity", "[Mock] Limited device capabilities"],
             assumptions=["[Mock] Mock mode active: no live LLM configured."],
-            open_questions=["[Mock] Target operational scope and language support."],
+            open_questions=["[Mock] Target operational scope, weekly time capacity, and budget parameters."],
             sources=sources,
+            evidence_source_quality="[Mock] Baseline source quality evaluated; empirical benchmarks require validation.",
         )
+
+    def _get_llm(self) -> Any:
+        return self._llm or llm_client
 
     async def run(
         self,
@@ -112,9 +100,23 @@ class ResearcherAgent:
             return self._make_mock_output(problem, parsed_sources)
 
         # 3. Obtain LLM client
-        llm = self._get_llm()
-        if llm is None:
-            logger.error("GEMINI_API_KEY is missing or invalid. Unable to invoke Gemini model.")
+        client = self._get_llm()
+        if client is None:
+            logger.error("[CONFIG_ERROR] No LLM client available.")
+            return ResearchResult(
+                agent="researcher",
+                status="failed",
+                key_findings=[],
+                user_needs=[],
+                constraints=[],
+                assumptions=[],
+                open_questions=[],
+                sources=[],
+            )
+
+        api_key = get_gemini_api_key()
+        if not api_key and not self._llm and client is llm_client:
+            logger.error("[CONFIG_ERROR] GEMINI_API_KEY is missing. Unable to invoke Gemini model.")
             return ResearchResult(
                 agent="researcher",
                 status="failed",
@@ -133,23 +135,27 @@ class ResearcherAgent:
             acquired_information=acquired_information,
             sources=parsed_sources,
         )
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
-        ]
 
         # 5. Call LLM with structured output or fallback parsing
         try:
             result = None
-            if hasattr(llm, "with_structured_output"):
+            if hasattr(client, "with_structured_output"):
+                messages = [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                ]
                 try:
-                    structured_llm = llm.with_structured_output(ResearchResult)
+                    structured_llm = client.with_structured_output(ResearchResult)
                     result = await structured_llm.ainvoke(messages)
                 except Exception as struct_err:
                     logger.warning(f"with_structured_output failed ({struct_err}), falling back to direct invocation.")
-                    result = await llm.ainvoke(messages)
+                    result = await client.ainvoke(messages)
             else:
-                result = await llm.ainvoke(messages)
+                result = await client.generate_content(
+                    prompt=user_prompt,
+                    system_instruction=SYSTEM_PROMPT,
+                    response_schema=ResearchResult,
+                )
 
             # 6. Parse and validate model output
             return self._parse_llm_response(result, parsed_sources)

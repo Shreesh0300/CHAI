@@ -34,9 +34,25 @@ class Resolution(BaseModel):
         default_factory=list,
         description="Agents whose findings support this preferred option.",
     )
+    position_a: Optional[str] = Field(
+        None,
+        description="What one agent or perspective recommends.",
+    )
+    position_b: Optional[str] = Field(
+        None,
+        description="What another agent or perspective recommends.",
+    )
+    why_they_differ: Optional[str] = Field(
+        None,
+        description="Underlying assumption or evidence explaining why they differ.",
+    )
+    rationale: Optional[str] = Field(
+        None,
+        description="Evidence or requirements supporting the resolution.",
+    )
     resolution: Optional[str] = Field(
         None,
-        description="Convenience composite resolution text (e.g. 'decision: reason').",
+        description="Convenience composite resolution text.",
     )
 
     @field_validator("decision_basis", "supporting_agents", mode="before")
@@ -52,8 +68,23 @@ class Resolution(BaseModel):
 
     @model_validator(mode="after")
     def _populate_composite_resolution(self) -> "Resolution":
+        if not self.rationale and self.reason:
+            self.rationale = self.reason
         if not self.resolution:
-            self.resolution = f"{self.decision}: {self.reason}"
+            if self.position_a and self.position_b:
+                parts = [
+                    f"CONFLICT: {self.conflict}",
+                    f"POSITION A: {self.position_a}",
+                    f"POSITION B: {self.position_b}",
+                ]
+                if self.why_they_differ:
+                    parts.append(f"WHY THEY DIFFER: {self.why_they_differ}")
+                parts.append(f"RESOLUTION: {self.decision}")
+                if self.rationale:
+                    parts.append(f"RATIONALE: {self.rationale}")
+                self.resolution = "\n".join(parts)
+            else:
+                self.resolution = f"{self.decision}: {self.reason}"
         return self
 
 
@@ -216,6 +247,11 @@ class ConflictResolutionResult(BaseModel):
                 self.conflict = self.unresolved_conflicts[0].conflict
             if not self.reason_unresolved:
                 self.reason_unresolved = self.unresolved_conflicts[0].reason
+        else:
+            if not self.conflict:
+                self.conflict = "No material conflict detected."
+            if not self.resolution:
+                self.resolution = "No material conflict detected."
         return self
 
 

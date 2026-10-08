@@ -15,9 +15,9 @@ Design principles:
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -44,10 +44,23 @@ class ArchitectureLayer(BaseModel):
 
 class ArchitectureDesign(BaseModel):
     """Overall system architecture description."""
-    overview: str = Field(..., description="High-level architecture summary.")
+    overview: str = Field(default="", description="High-level architecture summary.")
     pattern: Optional[str] = Field(None, description="Architecture pattern (e.g. 'Layered', 'Microservices', 'Serverless').")
     layers: List[ArchitectureLayer] = Field(default_factory=list, description="Architecture layers/tiers.")
     relationships: List[str] = Field(default_factory=list, description="Key relationships between components.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_from_str(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"overview": data}
+        return data
+
+    @model_validator(mode="after")
+    def _ensure_overview(self) -> "ArchitectureDesign":
+        if not self.overview:
+            self.overview = self.pattern or "System architecture design"
+        return self
 
 
 class TechnologyRecommendation(BaseModel):
@@ -84,17 +97,30 @@ class DatabaseEntity(BaseModel):
 
 class DatabaseDesign(BaseModel):
     """Architecture-level database/storage design."""
-    overview: str = Field(..., description="Storage strategy summary.")
+    overview: str = Field(default="", description="Storage strategy summary.")
     storage_type: Optional[str] = Field(None, description="Primary storage type (SQL, NoSQL, file, etc.).")
     entities: List[DatabaseEntity] = Field(default_factory=list, description="Important entities.")
     indexing_considerations: List[str] = Field(default_factory=list, description="Indexing notes.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_from_str(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"overview": data}
+        return data
+
+    @model_validator(mode="after")
+    def _ensure_overview(self) -> "DatabaseDesign":
+        if not self.overview:
+            self.overview = f"{self.storage_type or 'Database'} storage strategy"
+        return self
 
 
 class AIMLDesign(BaseModel):
     """AI/ML architecture when applicable."""
     model_config = {"protected_namespaces": ()}
 
-    overview: str = Field(..., description="AI/ML role in the system.")
+    overview: str = Field(default="", description="AI/ML role in the system.")
     model_role: Optional[str] = Field(None, description="What the model does.")
     inference_flow: Optional[str] = Field(None, description="How inference is performed.")
     model_selection: Optional[str] = Field(None, description="Model selection considerations.")
@@ -102,6 +128,19 @@ class AIMLDesign(BaseModel):
     rag_design: Optional[str] = Field(None, description="RAG architecture if applicable.")
     evaluation: Optional[str] = Field(None, description="Evaluation requirements.")
     latency_cost: Optional[str] = Field(None, description="Latency and cost considerations.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_from_str(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"overview": data}
+        return data
+
+    @model_validator(mode="after")
+    def _ensure_overview(self) -> "AIMLDesign":
+        if not self.overview:
+            self.overview = self.model_role or self.inference_flow or self.model_selection or "AI/ML subsystem architecture"
+        return self
 
 
 class TechnicalRisk(BaseModel):
@@ -128,13 +167,13 @@ class ImplementationPhase(BaseModel):
 
 class ScalabilityDesign(BaseModel):
     """Scalability considerations."""
-    overview: str = Field(..., description="Scalability strategy summary.")
+    overview: str = Field(default="Scalability strategy", description="Scalability strategy summary.")
     considerations: List[str] = Field(default_factory=list, description="Key scalability points.")
 
 
 class PerformanceDesign(BaseModel):
     """Performance considerations."""
-    overview: str = Field(..., description="Performance strategy summary.")
+    overview: str = Field(default="Performance strategy", description="Performance strategy summary.")
     considerations: List[str] = Field(default_factory=list, description="Key performance points.")
 
 
@@ -151,8 +190,79 @@ class EngineerResult(BaseModel):
     """
 
     # Metadata
-    agent: str = Field(default="engineer", description="Agent identifier.")
+    agent: str = Field(default="engineer", description="Agent identifier. MUST be 'engineer'.")
     status: AgentStatus = Field(default=AgentStatus.COMPLETED, description="Execution status.")
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def _coerce_agent_name(cls, v: Any) -> str:
+        if isinstance(v, str) and v.strip().lower() in ("engineer", "engineer agent", "engineer_agent"):
+            return "engineer"
+        return v
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_status(cls, v: Any) -> AgentStatus:
+        if isinstance(v, str):
+            clean = v.strip().lower()
+            if clean in ("completed", "success", "ok"):
+                return AgentStatus.COMPLETED
+            if clean in ("failed", "failure", "error"):
+                return AgentStatus.FAILED
+            if clean in ("partial", "degraded"):
+                return AgentStatus.PARTIAL
+        if isinstance(v, AgentStatus):
+            return v
+        return AgentStatus.COMPLETED
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "ai_ml_design" not in data and "ai_ml_system_design" in data:
+                data["ai_ml_design"] = data.pop("ai_ml_system_design")
+            if "architecture" not in data and "technical_architecture" in data:
+                data["architecture"] = data.pop("technical_architecture")
+            if "database_design" not in data and "data_flow_and_storage" in data:
+                data["database_design"] = data.pop("data_flow_and_storage")
+            if "components" not in data and "key_components" in data:
+                data["components"] = data.pop("key_components")
+            if "api_design" not in data and "apis_and_interfaces" in data:
+                raw_apis = data.pop("apis_and_interfaces")
+                if isinstance(raw_apis, list):
+                    coerced_apis = []
+                    for item in raw_apis:
+                        if isinstance(item, str):
+                            parts = item.split()
+                            method = parts[0].upper() if len(parts) > 0 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH") else "POST"
+                            path = parts[1] if len(parts) > 1 else item
+                            coerced_apis.append({"method": method, "path": path, "purpose": item})
+                        elif isinstance(item, dict):
+                            coerced_apis.append(item)
+                    data["api_design"] = coerced_apis
+            if "implementation_plan" not in data and "implementation_phases" in data:
+                raw_phases = data.pop("implementation_phases")
+                if isinstance(raw_phases, list):
+                    coerced_phases = []
+                    for item in raw_phases:
+                        if isinstance(item, str):
+                            coerced_phases.append({"phase": item, "description": item})
+                        elif isinstance(item, dict):
+                            coerced_phases.append(item)
+                    data["implementation_plan"] = coerced_phases
+            if "technical_risks" not in data and "technical_risks_and_mitigations" in data:
+                raw_risks = data.pop("technical_risks_and_mitigations")
+                if isinstance(raw_risks, list):
+                    coerced_risks = []
+                    for item in raw_risks:
+                        if isinstance(item, str):
+                            coerced_risks.append({"risk": item, "impact": "High", "mitigation": item})
+                        elif isinstance(item, dict):
+                            coerced_risks.append(item)
+                    data["technical_risks"] = coerced_risks
+            if "assumptions" not in data and "technical_assumptions" in data:
+                data["assumptions"] = data.pop("technical_assumptions")
+        return data
 
     # Core analysis
     problem_understanding: str = Field(..., description="How the Engineer Agent interprets the problem.")

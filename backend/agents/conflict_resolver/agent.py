@@ -63,8 +63,9 @@ _KNOWN_CHAI_AGENTS: Set[str] = {
 class ConflictResolverAgent:
     """CHAI Conflict Resolver Agent — multi-agent arbitration and trade-off specialist."""
 
-    def __init__(self, system_prompt: Optional[str] = None) -> None:
+    def __init__(self, system_prompt: Optional[str] = None, llm_client: Optional[Any] = None) -> None:
         self.system_prompt: str = system_prompt or SYSTEM_PROMPT
+        self._llm_client = llm_client
 
     # ------------------------------------------------------------------
     # Public interface
@@ -104,12 +105,14 @@ class ConflictResolverAgent:
         user_prompt = self._build_user_prompt(problem, context)
 
         # ---- Call LLM with bounded retry ----
+        client = self._llm_client or llm_client
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                response_text = await llm_client.generate_content(
+                response_text = await client.generate_content(
                     prompt=user_prompt,
                     system_instruction=self.system_prompt,
+                    response_schema=ConflictResolutionResult,
                 )
 
                 # Handle mock mode (API key not configured)
@@ -287,6 +290,13 @@ class ConflictResolverAgent:
         if not isinstance(data, dict):
             raise ValueError(f"Expected JSON object, got {type(data).__name__}")
 
+        # Normalize any minor LLM key typos in unresolved_conflicts
+        if isinstance(data.get("unresolved_conflicts"), list):
+            for uc in data["unresolved_conflicts"]:
+                if isinstance(uc, dict):
+                    if "confict" in uc and "conflict" not in uc:
+                        uc["conflict"] = uc.pop("confict")
+
         try:
             return ConflictResolutionResult(**data)
         except Exception as exc:
@@ -340,7 +350,7 @@ class ConflictResolverAgent:
                 status=AgentStatus.COMPLETED,
                 resolutions=[],
                 unresolved_conflicts=[],
-                decision_basis=["No material cross-agent conflicts detected for the problem."],
+                decision_basis=["No material conflict detected."],
                 assumptions=["Individual recommendations are mutually compatible."],
                 missing_information=[],
                 limitations=["No conflicts required arbitration."],
@@ -367,9 +377,13 @@ class ConflictResolverAgent:
             resolutions.append(
                 Resolution(
                     conflict=conflict_title,
+                    position_a="Engineer recommends PostgreSQL for strict transactional consistency and schema integrity.",
+                    position_b="Strategist recommends MongoDB for faster time-to-market and iterative schema flexibility.",
+                    why_they_differ="Engineer prioritizes data integrity and schema stability; Strategist prioritizes development velocity.",
                     decision=f"Prefer {pref}",
                     preferred_option=pref,
                     reason=reason,
+                    rationale="Explicit user transactional requirements and security boundaries outweigh initial prototyping speed.",
                     decision_basis=[
                         "Prioritized explicit user transactional integrity requirements over initial setup speed.",
                         "Preserved structured access control boundaries.",
@@ -385,9 +399,13 @@ class ConflictResolverAgent:
             resolutions.append(
                 Resolution(
                     conflict=conflict_title,
+                    position_a="Engineer recommends cloud-first architecture for central processing.",
+                    position_b="Guardian/Researcher mandate offline resilience for degraded connectivity.",
+                    why_they_differ="Engineer optimizes for central scalability; Guardian/Researcher optimize for operational availability without Internet.",
                     decision="Prefer edge-first local deployment with asynchronous cloud sync",
                     preferred_option="Edge-first local architecture",
                     reason="Explicit user constraint for unreliable/offline connectivity takes precedence over persistent cloud services.",
+                    rationale="User operational constraints require local triage execution regardless of network status.",
                     decision_basis=[
                         "Explicit user constraint requires resilience during intermittent connectivity.",
                         "Guardian identified safety risk if triage is unavailable offline.",
@@ -469,7 +487,7 @@ class ConflictResolverAgent:
             status=AgentStatus.COMPLETED,
             resolutions=resolutions,
             unresolved_conflicts=unresolved,
-            decision_basis=[
+            decision_basis=["No material conflict detected."] if (not resolutions and not unresolved) else [
                 "Explicit user constraints take precedence over specialist preferences.",
                 "Safety and security boundaries strictly maintained.",
                 "Unresolved conflicts identified where critical data is missing.",
