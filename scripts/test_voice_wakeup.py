@@ -75,14 +75,59 @@ def is_wake_word_present(text: str) -> bool:
     return False
 
 
-def play_audio(wav_path: Path) -> None:
-    """Play WAV audio aloud through computer speakers."""
+def play_audio(audio_path: Path) -> None:
+    """Play audio (MP3 or WAV) aloud through computer speakers using native Windows APIs."""
+    audio_path = audio_path.resolve()
+    print("🔊 Speaking aloud through system speakers...")
+
     try:
-        import winsound
-        print("🔊 Speaking aloud through system speakers...")
-        winsound.PlaySound(str(wav_path), winsound.SND_FILENAME)
-    except Exception as e:
-        print(f"Audio playback note: {e}")
+        header = audio_path.read_bytes()[:4]
+    except Exception:
+        header = b""
+
+    is_wav = header.startswith(b"RIFF")
+
+    # For WAV files, try winsound first
+    if is_wav:
+        try:
+            import winsound
+            winsound.PlaySound(str(audio_path), winsound.SND_FILENAME)
+            return
+        except Exception:
+            pass
+
+    # Native Windows MCI player (supports MP3, WAV, AAC natively on all Windows systems)
+    try:
+        import ctypes
+        import time
+        mci = ctypes.windll.winmm.mciSendStringW
+        alias = f"chai_sound_{int(time.time() * 1000)}"
+        open_cmd = (
+            f'open "{audio_path}" type mpegvideo alias {alias}'
+            if not is_wav
+            else f'open "{audio_path}" alias {alias}'
+        )
+        res_open = mci(open_cmd, None, 0, 0)
+        if res_open == 0:
+            mci(f"play {alias} wait", None, 0, 0)
+            mci(f"close {alias}", None, 0, 0)
+            return
+    except Exception as mci_err:
+        print(f"MCI playback error: {mci_err}")
+
+    # Fallback: Windows PowerShell presentationCore MediaPlayer
+    try:
+        import subprocess
+        ps_cmd = (
+            f"Add-Type -AssemblyName presentationCore; "
+            f"$player = New-Object System.Windows.Media.MediaPlayer; "
+            f"$player.Open([Uri]'{audio_path.as_uri()}'); "
+            f"$player.Play(); "
+            f"Start-Sleep -Seconds 6"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=False)
+    except Exception as ps_err:
+        print(f"Audio playback note: {ps_err}")
 
 
 def record_microphone(duration: int = 7, samplerate: int = 16000) -> bytes:
