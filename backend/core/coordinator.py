@@ -142,11 +142,27 @@ class CHAICoordinator:
         execution_statuses: List[AgentExecutionStatus] = []
         execution_trace: List[Dict[str, Any]] = []
 
+        # Check conversation context if conversation_id is provided
+        conversation_id = getattr(request, "conversation_id", None)
+        user_id = getattr(request, "user_id", None) or "guest_default"
+        conversation_context = getattr(request, "context", None)
+        if not conversation_context and conversation_id:
+            try:
+                from backend.memory.context import context_manager
+                conversation_context = await context_manager.build_solve_context(
+                    user_id=user_id,
+                    problem=request.problem,
+                    conversation_id=conversation_id,
+                    session_id=getattr(request, "session_id", None),
+                )
+            except Exception as e:
+                logger.debug(f"Could not load conversation context: {e}")
+
         # Initialize canonical state tracking
         state = create_initial_state(
             problem=request.problem,
-            user_id=getattr(request, "user_id", None),
-            context=getattr(request, "context", None),
+            user_id=user_id,
+            context=conversation_context,
         )
 
         # -------------------------------------------------------------
@@ -166,7 +182,7 @@ class CHAICoordinator:
             complexity = "low" if not selected_agents else "high"
         else:
             # ASK mode (default): Router is the final authority
-            route_decision = route_request(request.problem, getattr(request, "context", None))
+            route_decision = route_request(request.problem, conversation_context)
             if req_mode == "agent":
                 route = "complex"
                 complexity = "high"
@@ -226,42 +242,47 @@ class CHAICoordinator:
                         "- Do NOT use Markdown headings, sections, or bullet lists for simple questions.\n"
                         "- Do NOT mention any agents, internal systems, or multi-agent pipelines.\n"
                         "- Maintain flawless grammar, punctuation, and natural English.\n\n"
-                        f"Question: {request.problem}"
                     )
+                    if conversation_context and conversation_context.strip():
+                        prompt += f"[CONVERSATION CONTEXT]\n{conversation_context.strip()}\n\n"
+                    prompt += f"Question: {request.problem}"
                     direct_text = await llm_client.generate_content(prompt)
                     if not direct_text or direct_text.strip() == "Mock response: API key not configured.":
                         direct_text = f"Direct response provided for: {request.problem}"
             except Exception as e:
-                logger.error(f"Direct LLM call failed: {e}")
-                execution_trace.append({
-                    "agent": "direct_llm",
-                    "stage": "direct_llm",
-                    "status": "failed",
-                    "timestamp": _iso_now(),
-                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                    "error": str(e),
-                })
-                return FinalResponse(
-                    request_id=getattr(request, "request_id", None) or state.get("request_id"),
-                    request_status="failed",
-                    status="failed",
-                    route="simple",
-                    complexity=complexity,
-                    selected_agents=[],
-                    agent_outputs={},
-                    retrieved_sources=[],
-                    acquired_information=[],
-                    agent_execution_statuses=[],
-                    evaluation_findings=None,
-                    security_findings=None,
-                    detected_conflicts=[],
-                    final_synthesized_answer=f"Error generating direct response: {e}",
-                    final_answer=f"Error generating direct response: {e}",
-                    execution_trace=execution_trace,
-                    errors=[str(e)],
-                    limitations=[],
-                    metadata={"route": "simple"},
-                )
+                if self.direct_llm is not None:
+                    logger.error(f"Direct LLM call failed: {e}")
+                    execution_trace.append({
+                        "agent": "direct_llm",
+                        "stage": "direct_llm",
+                        "status": "failed",
+                        "timestamp": _iso_now(),
+                        "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+                        "error": str(e),
+                    })
+                    return FinalResponse(
+                        request_id=getattr(request, "request_id", None) or state.get("request_id"),
+                        request_status="failed",
+                        status="failed",
+                        route="simple",
+                        complexity=complexity,
+                        selected_agents=[],
+                        agent_outputs={},
+                        retrieved_sources=[],
+                        acquired_information=[],
+                        agent_execution_statuses=[],
+                        evaluation_findings=None,
+                        security_findings=None,
+                        detected_conflicts=[],
+                        final_synthesized_answer=f"Error generating direct response: {e}",
+                        final_answer=f"Error generating direct response: {e}",
+                        execution_trace=execution_trace,
+                        errors=[str(e)],
+                        limitations=[],
+                        metadata={"route": "simple"},
+                    )
+                logger.warning(f"Direct LLM call failed ({e}); utilizing resilient direct fallback.")
+                direct_text = f"Direct response provided for: {request.problem}"
 
             sanitized_direct = normalize_unicode_escapes(direct_text if isinstance(direct_text, str) else str(direct_text))
             user_facing_direct = format_user_facing_response(
@@ -273,6 +294,24 @@ class CHAICoordinator:
             )
             user_facing_direct = normalize_unicode_escapes(user_facing_direct)
 
+            if conversation_id:
+                try:
+                    from backend.memory.store import memory_store
+                    await memory_store.add_message(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="user",
+                        content=request.problem,
+                    )
+                    await memory_store.add_message(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=user_facing_direct,
+                    )
+                except Exception as me:
+                    logger.debug(f"Could not persist conversation history: {me}")
+
             execution_trace.append({
                 "agent": "direct_llm",
                 "stage": "direct_llm",
@@ -283,6 +322,7 @@ class CHAICoordinator:
 
             return FinalResponse(
                 request_id=getattr(request, "request_id", None) or state.get("request_id"),
+                conversation_id=conversation_id,
                 request_status="completed",
                 status="completed",
                 route="simple",
@@ -1325,8 +1365,27 @@ class CHAICoordinator:
             validation_result=validation_result,
         )
 
+        if conversation_id:
+            try:
+                from backend.memory.store import memory_store
+                await memory_store.add_message(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role="user",
+                    content=request.problem,
+                )
+                await memory_store.add_message(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=user_facing_deliverable,
+                )
+            except Exception as me:
+                logger.debug(f"Could not persist conversation history: {me}")
+
         return FinalResponse(
             request_id=getattr(request, "request_id", None) or state.get("request_id"),
+            conversation_id=conversation_id,
             request_status=overall_request_status,
             status=overall_request_status,
             route=route,

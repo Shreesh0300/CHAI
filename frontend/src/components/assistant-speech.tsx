@@ -280,16 +280,25 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
         }
 
         if (!aiAnswer) {
-          const res = await fetch("http://localhost:8000/api/solve", {
+          let res = await fetch(`${API_BASE}/api/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ problem: clean, mode: "ask" }),
+            body: JSON.stringify({ message: clean, problem: clean, mode: "ask" }),
           })
 
-          if (!res.ok) throw new Error("API solve endpoint offline")
+          if (!res.ok) {
+            res = await fetch(`${API_BASE}/api/solve`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ problem: clean, mode: "ask" }),
+            })
+          }
+
+          if (!res.ok) throw new Error("API assistant endpoint offline")
 
           const data = await res.json()
           const rawAnswer =
+            data.message ||
             data.final_answer ||
             data.final_synthesized_answer ||
             "Task executed successfully across multi-agent nodes."

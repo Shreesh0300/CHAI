@@ -49,6 +49,8 @@ class SolveRequest(BaseModel):
     context: Optional[str] = Field(None, description="Optional environmental or domain context.")
     selected_agents: Optional[List[str]] = Field(default=None, description="Optional override list of agents to execute.")
     mode: Optional[str] = Field(default="ask", description="UI interaction mode: 'ask', 'research', or 'agent'.")
+    conversation_id: Optional[str] = Field(None, description="Optional conversation/thread identifier.")
+    session_id: Optional[str] = Field(None, description="Optional session identifier for isolation.")
 
 
 class CHAIExecutionResult(BaseModel):
@@ -109,6 +111,7 @@ class FinalResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
     limitations: Optional[List[str]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    conversation_id: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:
         if self.status is None:

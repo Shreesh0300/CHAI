@@ -235,15 +235,25 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     setIsResponding(true)
 
     try {
-      const payload: Record<string, any> = { problem: prompt }
+      const payload: Record<string, any> = { message: prompt, problem: prompt }
       if (selectedMode && selectedMode !== "ask") {
         payload.mode = selectedMode
       }
-      const res = await fetch("http://localhost:8000/api/solve", {
+      if (user?.id) {
+        payload.user_id = user.id
+      }
+      let res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       })
+      if (!res.ok) {
+        res = await fetch(`${API_BASE}/api/solve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+      }
       if (!res.ok) throw new Error("API error")
       const data = await res.json()
       const rawContent =

@@ -8,4 +8,7 @@ __pycache__/
 node_modules/
 dist/
 .vscode/
-live_tests_a_d_results.json
+live_tests_a_d_results.json
+test_chai_terminal.py
+backend/trace_pipeline.py
+*.db
