@@ -137,9 +137,6 @@ class TTSService:
 
         api_key = self._resolve_api_key()
         if not api_key:
-            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
-            if fallback_wav:
-                return fallback_wav
             raise ValueError("TTS API key is not configured (set GEMINI_API_KEY or TTS_API_KEY).")
 
         from google import genai
