@@ -136,7 +136,7 @@ export function ChaiCover() {
                   CHAI turns one clear prompt into coordinated, thoughtful work. Simple answers stay in chat; bigger ideas get a workspace of their own.
                 </p>
 
-                <div className="mt-7 flex w-full max-w-[480px] flex-col gap-3 sm:mt-8 sm:flex-row sm:gap-3 lg:justify-start">
+                <div className="mt-7 flex w-full max-w-[580px] flex-col gap-3 sm:mt-8 sm:flex-row sm:flex-wrap sm:gap-3 lg:justify-start">
                   <button
                     type="button"
                     onClick={() => setAuthMode('sign-in')}

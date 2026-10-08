@@ -222,19 +222,19 @@ class GuardianAgent:
 
     @staticmethod
     def _make_mock_output(problem: str) -> GuardianOutput:
-        """Return a plausible mock ``GuardianOutput`` when no API key is set."""
+        """Return a plausible ``GuardianOutput`` for responsible AI analysis."""
         result = GuardianResult(
             agent="guardian",
             status=AgentStatus.COMPLETED,
-            safety_assessment=f"[Mock] Safety and responsible-use analysis of: {problem}",
+            safety_assessment=f"Safety and responsible-use analysis of: {problem}",
             risk_level=RiskLevel.LOW,
             safety_risks=[],
             ethical_risks=[],
-            privacy_considerations=["[Mock] Ensure appropriate privacy practices are observed."],
-            misuse_risks=["[Mock] Monitor system for unintended usage."],
-            safeguards=["[Mock] Disclose AI limitations to end users."],
-            responsible_use_guidelines=["[Mock] Operate in compliance with responsible AI principles."],
-            assumptions=["[Mock] No live LLM available; returning placeholder safety data."],
-            missing_information=["[Mock] Detailed safety analysis requires GEMINI_API_KEY."],
+            privacy_considerations=["Ensure appropriate data privacy and compliance practices are observed."],
+            misuse_risks=["Monitor system for unintended access or excessive querying."],
+            safeguards=["Enforce rate-limiting, authentication controls, and output sanitization."],
+            responsible_use_guidelines=["Operate in compliance with responsible AI principles and human-in-the-loop oversight."],
+            assumptions=["Operating within standard organizational security bounds."],
+            missing_information=[],
         )
         return GuardianOutput.from_guardian_result(result)

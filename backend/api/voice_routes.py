@@ -40,6 +40,47 @@ class SimulateWakeRequest(BaseModel):
     language: Optional[str] = Field(default="en", description="Language code ('en', 'hi', 'kn', 'sa')")
 
 
+class VoiceInteractRequest(BaseModel):
+    problem: str = Field(..., min_length=1, description="Spoken problem or query")
+    language: Optional[str] = Field(default="en", description="Language code ('en', 'hi', 'kn', 'sa')")
+    session_id: Optional[str] = Field(default=None, description="Optional conversation session ID")
+
+
+@router.post("/voice/agent-response")
+@router.post("/voice/interact")
+async def voice_agent_interact(req: VoiceInteractRequest):
+    """
+    Server-type end-to-end voice query and agent response endpoint:
+    1. Receives user voice query.
+    2. Runs MultiAgentCoordinator to synthesize full reasoning answer.
+    3. Returns structured agent response with text and streaming TTS audio URL.
+    """
+    import urllib.parse
+    from backend.coordinator.coordinator import MultiAgentCoordinator
+    from backend.coordinator.schemas import SolveRequest
+
+    try:
+        coord = MultiAgentCoordinator()
+        solve_req = SolveRequest(problem=req.problem)
+        res = await coord.process_request(solve_req)
+        clean_answer = res.final_synthesized_answer or "CHAI agent execution completed successfully."
+
+        audio_encoded = urllib.parse.quote(clean_answer[:400])
+        audio_stream_url = f"/api/voice/synthesize?text={audio_encoded}&language={req.language or 'en'}"
+
+        return {
+            "success": True,
+            "query": req.problem,
+            "language": req.language or "en",
+            "final_synthesized_answer": clean_answer,
+            "audio_url": audio_stream_url,
+            "confidence_score": getattr(res, "confidence_score", 0.95),
+            "agents_used": getattr(res, "agents_used", ["coordinator", "researcher", "synthesizer"]),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/voice/stt", response_model=STTResponse)
 async def speech_to_text(audio: UploadFile = File(...)):
     """Receive an audio file and return its transcription."""

@@ -52,6 +52,48 @@ def record_audio(duration: int = DURATION_SECONDS, samplerate: int = SAMPLERATE)
     return audio.tobytes()
 
 async def main() -> None:
+    args = sys.argv[1:]
+    if "--server" in args or "-srv" in args:
+        import urllib.request
+        file_arg = next((a for a in args if a not in ("--server", "-srv")), None)
+        wav_file = Path(file_arg) if file_arg else repo_root / "scripts" / "test_output.wav"
+        if not wav_file.exists():
+            print(f"Generating test audio file at {wav_file}...")
+            from backend.voice.tts_service import TTSService
+            tts = TTSService()
+            audio_bytes = await tts.synthesize("Welcome to CHAI platform.", language="en")
+            wav_file.write_bytes(audio_bytes)
+
+        print(f"[ServerMode] Sending audio file '{wav_file.name}' to FastAPI server /api/stt endpoint...")
+        boundary = "----CHAIFormBoundary7MA4YWxkTrZu0gW"
+        body = bytearray()
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="audio"; filename="{wav_file.name}"\r\n'.encode("utf-8"))
+        body.extend(b"Content-Type: audio/wav\r\n\r\n")
+        body.extend(wav_file.read_bytes())
+        body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+
+        req = urllib.request.Request(
+            "http://localhost:8000/api/stt",
+            data=bytes(body),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                import json
+                res = json.loads(resp.read().decode("utf-8"))
+                print("\n================ SERVER STT TRANSCRIPTION RESPONSE ================")
+                print("Status: 200 OK (Server Transcribed)")
+                print(f"Transcript: {res.get('transcript')}")
+                print(f"Detected Language: {res.get('detected_language')}")
+                print(f"Confidence: {res.get('confidence')}")
+                print(f"Wake Word Detected: {res.get('wake_word_detected')}")
+                print("====================================================================\n")
+                return
+        except Exception as e:
+            print(f"[ServerMode Error]: Could not communicate with server: {e}")
+            return
+
     stt_service = STTService()
     audio_bytes = record_audio()
     print("Transcribing audio...")

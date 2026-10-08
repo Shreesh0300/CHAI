@@ -91,6 +91,8 @@ def route_agents_for_problem(
             return ["researcher", "guardian", "strategist", "evaluator"]
         elif m == "software":
             return ["engineer", "security", "researcher", "evaluator"]
+        elif m in ("advance", "advanced"):
+            return list(CANONICAL_AGENTS)
 
     if allow_conditional_routing and is_simple_factual_query(problem):
         # Lightweight route for trivial definitional queries

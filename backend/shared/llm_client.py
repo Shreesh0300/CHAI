@@ -14,9 +14,9 @@ logger = get_logger(__name__)
 def get_default_gemini_model() -> str:
     """
     Returns the configured Gemini model name from GEMINI_MODEL env var,
-    defaulting to the current stable model: 'gemini-3.8-flash'.
+    defaulting to the responsive model: 'gemini-flash-lite-latest'.
     """
-    return os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+    return os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip() or "gemini-flash-lite-latest"
 
 
 def get_gemini_api_key() -> str:
@@ -54,6 +54,8 @@ def get_gemini_chat_model(
         model=resolved_model,
         temperature=temperature,
         api_key=key,
+        max_retries=0,
+        request_timeout=10.0,
     )
 
 
@@ -97,34 +99,36 @@ class GeminiClient:
         if not self.api_key:
             return "Mock response: API key not configured."
 
-        try:
-            import google.generativeai as genai
-            try:
-                model = genai.GenerativeModel(
-                    model_name=self.model_name,
-                    system_instruction=system_instruction,
-                )
-            except (TypeError, ValueError):
-                model = genai.GenerativeModel(model_name=self.model_name)
-                if system_instruction:
-                    prompt = f"{system_instruction}\n\n{prompt}"
+        import google.generativeai as genai
 
-            response = await model.generate_content_async(prompt)
-            return response.text
-        except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}")
-            err_str = str(e)
-            if (
-                "PERMISSION_DENIED" in err_str
-                or "API_KEY" in err_str
-                or "403" in err_str
-                or "SERVICE_DISABLED" in err_str
-                or "Event loop is closed" in err_str
-                or "closed" in err_str
-                or "UnaryUnaryCall" in err_str
-            ):
-                return "Mock response: API error or offline fallback."
-            raise
+        # Priority candidates for generation to maximize quota resilience
+        candidates = [self.model_name, "gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+        seen = set()
+        models_to_try = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
+        last_error = None
+        for m_name in models_to_try:
+            try:
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=m_name,
+                        system_instruction=system_instruction,
+                    )
+                except (TypeError, ValueError):
+                    model = genai.GenerativeModel(model_name=m_name)
+                    if system_instruction:
+                        prompt = f"{system_instruction}\n\n{prompt}"
+
+                response = await model.generate_content_async(prompt)
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Gemini API model {m_name} failed: {e}")
+                continue
+
+        logger.error(f"All Gemini models failed: {last_error}")
+        return "Mock response: API error or offline fallback."
 
 
 llm_client = GeminiClient()

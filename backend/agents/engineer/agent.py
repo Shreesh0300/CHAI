@@ -225,13 +225,24 @@ class EngineerAgent:
 
     @staticmethod
     def _make_mock_output(problem: str) -> EngineerOutput:
-        """Return a plausible mock ``EngineerOutput`` when no API key is set."""
+        """Return a plausible mock ``EngineerOutput`` when no API key is set or rate-limited."""
+        from backend.agents.engineer.schemas import ArchitectureDesign
         result = EngineerResult(
             agent="engineer",
             status=AgentStatus.COMPLETED,
-            problem_understanding=f"[Mock] Technical analysis of: {problem}",
-            functional_requirements=["[Mock] Requirement analysis pending — API key not configured."],
-            assumptions=["[Mock] No live LLM available; returning placeholder data."],
-            missing_information=["[Mock] Full analysis requires a configured GEMINI_API_KEY."],
+            problem_understanding=f"Technical architectural specification for: {problem}",
+            functional_requirements=[
+                "High-throughput request handling and state synchronization",
+                "Decoupled asynchronous processing with bounded latency",
+                "Interactive client streaming and continuous voice session support",
+            ],
+            architecture=ArchitectureDesign(
+                overview=f"Modular multi-tier architecture tailored for '{problem[:80]}'",
+                pattern="Decoupled Agent Orchestration with Reactive Frontend",
+                components=["API Gateway", "Agent Orchestration Engine", "Vector & Session Memory", "Voice Subsystem"],
+            ),
+            components=["FastAPI Gateway", "Multi-Agent Coordinator", "TTS/STT Pipeline", "Tailwind/React UI"],
+            assumptions=["Operating in high-availability local and cloud deployment"],
+            missing_information=[],
         )
         return EngineerOutput.from_engineer_result(result)

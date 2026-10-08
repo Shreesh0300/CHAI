@@ -18,10 +18,11 @@ logger = get_logger(__name__)
 logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
 
-DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
+DEFAULT_TTS_MODEL = "gemini-3.8-flash-lite-tts"
 FALLBACK_TTS_MODELS = [
-    "gemini-3.8-flash-lite-tts",
-    "models/gemini-3.8-flash-tts",
+    "gemini-3.8-flash-tts",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
     "models/gemini-3.8-flash-lite-tts",
 ]
 
@@ -48,8 +49,11 @@ class TTSService:
         """Safely resolve API key from voice settings, environment, or backend config."""
         api_key = (
             self.settings.tts_api_key
-            or getattr(self.settings, "gemini_api_key", "")
+            or getattr(self.settings, "speech_api_key", "")
             or os.getenv("TTS_API_KEY", "")
+            or os.getenv("SPEECH_API_KEY", "")
+            or os.getenv("GEMINI_API_KEY_SPEECH", "")
+            or getattr(self.settings, "gemini_api_key", "")
             or os.getenv("GEMINI_API_KEY", "")
         ).strip()
         if not api_key:

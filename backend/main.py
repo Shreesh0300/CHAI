@@ -17,14 +17,22 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start Alexa & Siri style background voice wake-up daemon automatically
-    autostart = os.getenv("VOICE_WAKEUP_AUTOSTART", "true").lower() in ("true", "1", "yes")
+    # Startup: Start background daemon only if explicitly requested; frontend Web Speech API handles browser voice
+    autostart = os.getenv("VOICE_WAKEUP_AUTOSTART", "false").lower() in ("true", "1", "yes")
     daemon = get_voice_wakeup_daemon()
     if autostart:
         logger.info("[ServerStartup] 🎙️ Initializing hands-free autonomous Voice Wake-Up Daemon (Apple/Alexa style)...")
         daemon.start()
     else:
         logger.info("[ServerStartup] Voice wake-up daemon autostart disabled via VOICE_WAKEUP_AUTOSTART.")
+
+    # Background opportunistic sync of cached conversations to Supabase
+    try:
+        from scripts.sync_to_supabase import sync_conversations
+        import threading
+        threading.Thread(target=sync_conversations, daemon=True).start()
+    except Exception:
+        pass
 
     yield
 
@@ -71,6 +79,26 @@ def create_app() -> FastAPI:
     # Voice API (/api/voice/..., /voice/..., /api/stt)
     app.include_router(voice_router, prefix="/api")
     app.include_router(voice_router)
+
+    # Optional Production SPA Static Serving (for Docker / Render Single-Service Deployment)
+    dist_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
+    if os.path.isdir(dist_dir):
+        from starlette.staticfiles import StaticFiles
+        from starlette.responses import FileResponse
+
+        assets_dir = os.path.join(dist_dir, "assets")
+        if os.path.isdir(assets_dir):
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str):
+            if full_path.startswith("api") or full_path.startswith("voice") or full_path == "health":
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Not Found")
+            target = os.path.join(dist_dir, full_path)
+            if os.path.isfile(target):
+                return FileResponse(target)
+            return FileResponse(os.path.join(dist_dir, "index.html"))
 
     return app
 

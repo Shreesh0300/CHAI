@@ -49,6 +49,19 @@ export const authClient = {
             provider: 'email',
           };
           setStoredUser(userObj);
+          if (data.access_token) {
+            localStorage.setItem('chai_access_token', data.access_token);
+          }
+          // Sync to Supabase profiles table
+          fetch('http://localhost:8000/api/auth/sync-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(data.access_token ? { Authorization: `Bearer ${data.access_token}` } : {}),
+            },
+            body: JSON.stringify({ id: data.id, email, name }),
+          }).catch(() => {});
+
           return { data: userObj, error: null };
         }
       } catch {
@@ -82,6 +95,19 @@ export const authClient = {
             provider: 'email',
           };
           setStoredUser(userObj);
+          if (data.access_token) {
+            localStorage.setItem('chai_access_token', data.access_token);
+          }
+          // Sync to Supabase profiles table
+          fetch('http://localhost:8000/api/auth/sync-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(data.access_token ? { Authorization: `Bearer ${data.access_token}` } : {}),
+            },
+            body: JSON.stringify({ id: data.id, email, name: userObj.name }),
+          }).catch(() => {});
+
           return { data: userObj, error: null };
         }
       } catch {
@@ -179,6 +205,9 @@ export const authClient = {
       // ignore
     }
     setStoredUser(null);
+    try {
+      localStorage.removeItem('chai_access_token');
+    } catch {}
     return { data: true, error: null };
   },
 

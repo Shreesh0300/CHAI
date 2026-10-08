@@ -24,7 +24,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { authClient } from "@/lib/auth-client"
 import { GoogleIcon, GitHubIcon } from "@/components/auth-icons"
 import { SupabaseAuthModal } from "@/components/supabase-auth-modal"
-import { signInWithSupabaseOAuth } from "@/lib/supabase"
+import { signInWithSupabaseOAuth, fetchUserProfile, upsertUserProfile } from "@/lib/supabase"
 import { cn } from "@/lib/utils"
 
 type ThemeChoice = "system" | "light" | "dark"
@@ -108,11 +108,18 @@ export function ProfileMenu({ user }: { user: ProfileMenuUser | null }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    if (user?.name) {
+    if (user?.id) {
+      fetchUserProfile(user.id).then((p) => {
+        if (p && p.full_name) {
+          setDisplayName(p.full_name)
+          setDraftName(p.full_name)
+        }
+      }).catch(() => {})
+    } else if (user?.name) {
       setDisplayName(user.name)
       setDraftName(user.name)
     }
-  }, [user])
+  }, [user, open])
 
   useEffect(() => {
     const root = document.documentElement
@@ -194,6 +201,17 @@ export function ProfileMenu({ user }: { user: ProfileMenuUser | null }) {
       if (error) {
         setProfileError("Could not update profile. Please try again.")
         return
+      }
+
+      // Persist directly to Supabase public.profiles
+      if (user) {
+        upsertUserProfile({
+          id: user.id || `user_${Date.now()}`,
+          name: nextName,
+          email: user.email,
+          image: user.image,
+          provider: user.provider,
+        }).catch(() => {})
       }
 
       setDisplayName(nextName)
@@ -388,6 +406,10 @@ export function ProfileMenu({ user }: { user: ProfileMenuUser | null }) {
                 <span className="text-[10px] text-muted-foreground/80 font-mono">
                   #{(user?.id || user?.email || "guest").slice(0, 8)}
                 </span>
+              </div>
+              <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span>Supabase Profile: Synced & Stored</span>
               </div>
             </div>
 

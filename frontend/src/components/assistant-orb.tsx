@@ -309,13 +309,49 @@ export function AssistantOrb({
       ctx.stroke()
 
       // -------------------------------------------------------------
-      // 6. Center Audio Waveform Spectrum Bars (Not a plain EQ)
+      // 6. Fluid Undulating Audio Soundwaves & Spectrum Bars
       // -------------------------------------------------------------
+      const maxHeight = orbRadius * 0.72
+      const waveAmp = (currentLevel > 0.01 ? currentLevel * maxHeight * 0.95 : 10) * (currentState === "listening" ? 1.5 : 1.0)
+
+      // Primary Cyan Fluid Soundwave
+      ctx.save()
+      ctx.beginPath()
+      for (let x = -orbRadius * 0.85; x <= orbRadius * 0.85; x += 3) {
+        const normX = x / (orbRadius * 0.85)
+        const envelope = Math.cos(normX * Math.PI * 0.5)
+        const y = Math.sin(normX * 6 + elapsed * 6) * waveAmp * envelope
+        if (x === -orbRadius * 0.85) ctx.moveTo(cx + x, cy + y)
+        else ctx.lineTo(cx + x, cy + y)
+      }
+      ctx.strokeStyle = currentState === "speaking" ? "rgba(255, 45, 135, 0.85)" : "rgba(0, 245, 255, 0.9)"
+      ctx.lineWidth = 2.4
+      ctx.shadowColor = currentState === "speaking" ? "#ff2d87" : "#00f5ff"
+      ctx.shadowBlur = 12
+      ctx.stroke()
+      ctx.restore()
+
+      // Counter-phase Magenta/Violet Harmonic Soundwave
+      ctx.save()
+      ctx.beginPath()
+      for (let x = -orbRadius * 0.85; x <= orbRadius * 0.85; x += 3) {
+        const normX = x / (orbRadius * 0.85)
+        const envelope = Math.cos(normX * Math.PI * 0.5)
+        const y = Math.cos(normX * 5 - elapsed * 4.8) * (waveAmp * 0.78) * envelope
+        if (x === -orbRadius * 0.85) ctx.moveTo(cx + x, cy + y)
+        else ctx.lineTo(cx + x, cy + y)
+      }
+      ctx.strokeStyle = currentState === "speaking" ? "rgba(168, 85, 247, 0.8)" : "rgba(255, 45, 135, 0.75)"
+      ctx.lineWidth = 1.8
+      ctx.shadowColor = "#ff2d87"
+      ctx.shadowBlur = 10
+      ctx.stroke()
+      ctx.restore()
+
       const totalWidth = orbRadius * 1.55
       const barWidth = 3.2
       const gap = (totalWidth - numBars * barWidth) / (numBars - 1)
       const startX = cx - totalWidth / 2
-      const maxHeight = orbRadius * 0.72
       const mid = (numBars - 1) / 2
 
       for (let i = 0; i < numBars; i++) {
@@ -403,11 +439,44 @@ export function AssistantOrb({
       ctx.restore() // End clip of inner core
 
       // -------------------------------------------------------------
-      // 7. Glowing Outer Boundary Ring with Neon Bloom
+      // 7. Dynamic Outward Shockwave Ripples (Reacting to speech)
+      // -------------------------------------------------------------
+      const ripplePhase = (elapsed * 2.2) % 1
+      for (let w = 0; w < 3; w++) {
+        const prog = (ripplePhase + w / 3) % 1
+        const rRing = orbRadius + prog * (size * 0.16)
+        const alpha = (1 - prog) * (currentState === "listening" ? 0.65 : 0.28) * (0.35 + currentLevel * 1.8)
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(cx, cy, rRing, 0, Math.PI * 2)
+        ctx.strokeStyle =
+          currentState === "speaking"
+            ? `rgba(255, 45, 135, ${Math.min(0.85, alpha)})`
+            : `rgba(0, 245, 255, ${Math.min(0.85, alpha)})`
+        ctx.lineWidth = 1.8 * (1 - prog * 0.5)
+        ctx.shadowColor = currentState === "speaking" ? "#ff2d87" : "#00f5ff"
+        ctx.shadowBlur = 14 * (1 - prog)
+        ctx.stroke()
+        ctx.restore()
+      }
+
+      // -------------------------------------------------------------
+      // 8. Glowing Outer Boundary Wave Ring with Liquid Perimeter
       // -------------------------------------------------------------
       ctx.save()
       ctx.beginPath()
-      ctx.arc(cx, cy, orbRadius, 0, Math.PI * 2)
+      const segs = 64
+      const boundaryWaveAmp = currentLevel * 14 + (currentState === "listening" ? 2.5 : 0.8)
+      for (let s = 0; s <= segs; s++) {
+        const theta = (s / segs) * Math.PI * 2
+        const waveOffset = Math.sin(theta * 7 + elapsed * 5.5) * boundaryWaveAmp
+        const r = orbRadius + waveOffset
+        const px = cx + Math.cos(theta) * r
+        const py = cy + Math.sin(theta) * r
+        if (s === 0) ctx.moveTo(px, py)
+        else ctx.lineTo(px, py)
+      }
+      ctx.closePath()
 
       // Ring stroke gradient
       const ringGrad = ctx.createLinearGradient(cx - orbRadius, cy - orbRadius, cx + orbRadius, cy + orbRadius)
@@ -418,9 +487,9 @@ export function AssistantOrb({
       ringGrad.addColorStop(1, "#ff2d87")
 
       ctx.strokeStyle = ringGrad
-      ctx.lineWidth = currentState === "listening" ? 2.5 : 2
+      ctx.lineWidth = currentState === "listening" ? 2.8 : 2.0
       ctx.shadowColor = glowColor
-      ctx.shadowBlur = bloomSpread
+      ctx.shadowBlur = bloomSpread + currentLevel * 20
       ctx.stroke()
       ctx.restore()
 

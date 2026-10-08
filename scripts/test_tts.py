@@ -21,12 +21,31 @@ from backend.voice.tts_service import TTSService
 
 
 async def main() -> None:
-    service = TTSService()
+    args = sys.argv[1:]
     test_language = "en"
     test_text = "Welcome to CHAI. Speech synthesis is operational."
     output_path = repo_root / "scripts" / "test_output.wav"
 
-    print("TTS Test")
+    if "--server" in args or "-srv" in args:
+        import urllib.request
+        import urllib.parse
+        custom_text = " ".join([a for a in args if a not in ("--server", "-srv")]).strip() or test_text
+        encoded = urllib.parse.quote(custom_text)
+        server_url = f"http://localhost:8000/api/voice/synthesize?text={encoded}&language={test_language}"
+        print(f"[ServerMode] Requesting TTS audio stream from FastAPI server endpoint:\n{server_url}")
+        try:
+            with urllib.request.urlopen(server_url, timeout=30) as resp:
+                audio_bytes = resp.read()
+                output_path.write_bytes(audio_bytes)
+                print(f"Server TTS Audio Received: {len(audio_bytes)} bytes (saved to {output_path.name})")
+                print("Status: 200 OK (Server Synthesized)")
+                return
+        except Exception as e:
+            print(f"[ServerMode Error]: Could not retrieve audio from server: {e}")
+            return
+
+    service = TTSService()
+    print("TTS Test (Local Service)")
     print(f"Language: {test_language}")
     print(f"Model: {service.model_name}")
 

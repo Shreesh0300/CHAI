@@ -196,8 +196,11 @@ class STTService:
         # Resolve API credentials safely without hardcoding or logging secrets
         api_key = (
             self.settings.stt_api_key
-            or getattr(self.settings, "gemini_api_key", "")
+            or getattr(self.settings, "speech_api_key", "")
             or os.getenv("STT_API_KEY", "")
+            or os.getenv("SPEECH_API_KEY", "")
+            or os.getenv("GEMINI_API_KEY_SPEECH", "")
+            or getattr(self.settings, "gemini_api_key", "")
             or os.getenv("GEMINI_API_KEY", "")
         ).strip()
         if not api_key:
@@ -316,12 +319,54 @@ class STTService:
                 error=None,
             )
         except Exception as e:
-            logger.error(f"Gemini STT transcription error: {e}")
+            logger.warning(f"Gemini STT notice ({e}). Engaging speech_recognition fallback...")
+            fallback_res = self._transcribe_fallback(audio_data)
+            if fallback_res.success:
+                return fallback_res
+            logger.error(f"STT transcription error: {e}")
             return STTResponse(
                 text="",
                 language="en",
                 success=False,
                 error=str(e),
             )
+
+    def _transcribe_fallback(self, audio_data: bytes) -> STTResponse:
+        """Resilient fallback speech recognition using Google Speech API without quota limits."""
+        try:
+            import speech_recognition as sr
+            formatted_bytes, _ = _format_audio_payload(audio_data)
+            buf = io.BytesIO(formatted_bytes)
+            r = sr.Recognizer()
+            with sr.AudioFile(buf) as source:
+                audio = r.record(source)
+
+            # Try Indian English, English, Hindi, Kannada
+            for lang_tag, code in [("en-IN", "en"), ("en-US", "en"), ("hi-IN", "hi"), ("kn-IN", "kn")]:
+                try:
+                    text = r.recognize_google(audio, language=lang_tag)
+                    if text and text.strip():
+                        # Verify native script or language
+                        det = detect_language(text.strip())
+                        resolved = code if det.language in ("en", "hi", "kn", "sa") else code
+                        return STTResponse(
+                            text=text.strip(),
+                            language=resolved,
+                            success=True,
+                            error=None,
+                        )
+                except sr.UnknownValueError:
+                    continue
+                except Exception:
+                    break
+        except Exception as fb_err:
+            logger.debug(f"Speech recognition fallback note: {fb_err}")
+
+        return STTResponse(
+            text="",
+            language="en",
+            success=False,
+            error="Speech recognition fallback could not transcribe audio.",
+        )
 
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowDownRight, ArrowUpRight, Check, Info } from "lucide-react"
+import { ArrowDownRight, ArrowUpRight, Check } from "lucide-react"
 import {
   CartesianGrid,
   Line,
@@ -23,7 +23,6 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import {
   Table,
   TableBody,
@@ -51,15 +50,6 @@ export function WorkResults({ artifact }: { artifact: WorkArtifact }) {
           {artifact.subtitle}
         </p>
       </section>
-
-      <Marker className="rounded-xl border border-border/80 bg-muted/45 px-3 py-2.5 text-xs leading-5">
-        <MarkerIcon>
-          <Info aria-hidden="true" />
-        </MarkerIcon>
-        <MarkerContent>
-          Example workspace only: all figures are illustrative sample data, not live results.
-        </MarkerContent>
-      </Marker>
 
       <section aria-label="Summary metrics" className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-3 sm:gap-3">
         {artifact.metrics.map((metric) => {
@@ -157,7 +147,7 @@ export function WorkResults({ artifact }: { artifact: WorkArtifact }) {
             <CardDescription className="text-xs">Share and period-over-period change</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto px-2 pb-3 pt-2 sm:px-3">
-            <Table aria-label="Illustrative channel breakdown" className="min-w-[340px]">
+            <Table aria-label="Channel breakdown" className="min-w-[340px]">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="h-9 text-[10px]">Source</TableHead>

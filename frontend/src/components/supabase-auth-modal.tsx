@@ -168,9 +168,31 @@ export function SupabaseAuthModal({
         </div>
 
         {errorMsg && (
-          <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-            <AlertCircle className="size-4 shrink-0 mt-0.5" />
-            <span className="leading-snug">{errorMsg}</span>
+          <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive space-y-1.5">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="size-4 shrink-0 mt-0.5" />
+              <span className="leading-snug">{errorMsg}</span>
+            </div>
+            {errorMsg.includes('OAuth Secret') && (
+              <div className="pt-1 flex flex-wrap items-center gap-2 pl-6">
+                <a
+                  href="https://supabase.com/dashboard/project/lkgezucyebjyxatpdxzv/auth/providers"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold underline hover:text-foreground text-[11px]"
+                >
+                  Configure Secret in Supabase ↗
+                </a>
+                <span className="opacity-40">•</span>
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab('demo'); setErrorMsg(null); }}
+                  className="font-semibold underline hover:text-foreground text-[11px]"
+                >
+                  Use Instant Sign-In Instead →
+                </button>
+              </div>
+            )}
           </div>
         )}
 

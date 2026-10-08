@@ -8,5 +8,11 @@
     "build": "npm --prefix frontend run build",
     "lint": "npm --prefix frontend run lint",
     "backend": "python scripts/run_backend.py"
+  },
+  "devDependencies": {
+    "prisma": "^8.0.0-rc.21"
+  },
+  "dependencies": {
+    "@supabase/server": "^1.9.1"
   }
 }

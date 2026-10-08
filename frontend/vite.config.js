@@ -21,6 +21,10 @@ export default defineConfig({
       'cn': path.resolve(__dirname, './src/lib/utils.ts'),
     },
   },
+  server: {
+    port: 3000,
+    host: true,
+  },
 })
 
 

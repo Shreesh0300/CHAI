@@ -19,6 +19,9 @@ class VoiceSettings(BaseSettings):
     stt_api_key: str = ""
     stt_api_url: str = ""
 
+    # --- Shared Voice / Speech Key ---
+    speech_api_key: str = ""
+
     # --- Gemini API Key fallback ---
     gemini_api_key: str = ""
 

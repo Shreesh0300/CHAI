@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List
+from typing import Literal, Optional, List, Any
 from pydantic import BaseModel, Field, field_validator
 from backend.agents.researcher.models import ResearchResult
 
@@ -25,8 +25,19 @@ class StrategyResult(BaseModel):
     Output contract for the Strategist Agent.
     Encapsulates strategic direction, priorities, roadmap, trade-offs, and metrics.
     """
-    agent: Literal["strategist"] = "strategist"
-    status: Literal["completed", "failed"] = "completed"
+    agent: str = "strategist"
+    status: str = "completed"
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def normalize_agent(cls, v: Any) -> str:
+        return "strategist"
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: Any) -> str:
+        return "completed" if "complete" in str(v).lower() else "failed"
+
     strategy: str = Field(default="", description="High-level practical strategic thesis and direction")
     priorities: list[str] = Field(
         default_factory=list,

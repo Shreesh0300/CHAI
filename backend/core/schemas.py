@@ -33,6 +33,7 @@ class AgentExecutionStatus(BaseModel):
     error: Optional[str] = None
 
 class FinalResponse(BaseModel):
+    id: Optional[str] = None
     request_status: str
     selected_agents: List[str]
     agent_outputs: Dict[str, Any]

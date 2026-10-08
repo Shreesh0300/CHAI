@@ -35,8 +35,8 @@ class ResearchResult(BaseModel):
     Strict output contract for the Researcher Agent.
     Encapsulates problem analysis without designing downstream solutions.
     """
-    agent: Literal["researcher"] = "researcher"
-    status: Literal["completed", "failed"] = "completed"
+    agent: str = Field(default="researcher", description="Agent identifier")
+    status: str = Field(default="completed", description="Execution status")
     key_findings: list[str] = Field(
         default_factory=list,
         description="Core observations and factual findings derived from the problem and provided information"

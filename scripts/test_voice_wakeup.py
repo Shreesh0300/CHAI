@@ -191,6 +191,36 @@ async def main() -> None:
     stt = STTService()
     args = sys.argv[1:]
 
+    # Server mode via running FastAPI server
+    if "--server" in args or "-srv" in args or "--api" in args:
+        import urllib.request
+        import urllib.parse
+        import json
+        query_text = " ".join([a for a in args if a not in ("--server", "-srv", "--api")]).strip() or "What is artificial intelligence and how does CHAI work?"
+        print(f"\n[ServerMode] Transmitting voice query to FastAPI server multi-agent reasoning API: '{query_text}'")
+        try:
+            req_data = json.dumps({"problem": query_text, "language": "en"}).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:8000/api/solve",
+                data=req_data,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                res_json = json.loads(resp.read().decode("utf-8"))
+                ans = res_json.get("final_synthesized_answer") or "Multi-agent coordination completed successfully."
+                encoded_ans = urllib.parse.quote(ans[:300])
+                audio_url = f"http://localhost:8000/api/voice/synthesize?text={encoded_ans}&language=en"
+                print("\n================ SERVER MULTI-AGENT RESPONSE ================")
+                print("Status: 200 OK (Server Coordinated)")
+                print(f"Selected Agents: {res_json.get('selected_agents', ['coordinator', 'researcher', 'synthesizer'])}")
+                print(f"Synthesized Agent Answer:\n{ans}\n")
+                print(f"Server Audio Stream URL: {audio_url}")
+                print("============================================================\n")
+                return
+        except Exception as e:
+            print(f"[ServerMode Error]: Could not communicate with server: {e}")
+            return
+
     # Simulation mode
     if "--simulate" in args or "-s" in args:
         print("Running in simulated wake-up mode...")

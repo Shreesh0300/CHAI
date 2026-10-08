@@ -445,23 +445,6 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
       setIsRecording(true);
 
-      // Simulation function for tight sandbox environments
-      function simulateText() {
-        const fakeText = "Can you build a high fidelity Framer Motion layout animation for a dark mode dashboard?";
-        const words = fakeText.split(" ");
-        let i = 0;
-        let currentBase = valueRef.current;
-        demoTextIntervalRef.current = window.setInterval(() => {
-          if (i < words.length) {
-            currentBase = (currentBase ? currentBase + " " : "") + words[i];
-            handleValueChange(currentBase);
-            i++;
-          } else {
-            stopRecording();
-          }
-        }, 300);
-      }
-
       if (stream) {
         streamRef.current = stream;
         
@@ -533,15 +516,11 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
           recognitionRef.current = recognition;
           recognition.start();
         } else {
-          console.warn("Speech Recognition API not supported in this browser. Using simulated text.");
-          simulateText();
+          console.warn("Speech Recognition API not supported in this browser.");
+          stopRecording();
         }
       } else {
-        // Fallback simulated visualizer
-        demoIntervalRef.current = window.setInterval(() => {
-          setAudioData(Array.from({ length: 5 }, () => Math.random() * 0.8 + 0.1));
-        }, 100);
-        simulateText();
+        stopRecording();
       }
     }, [handleValueChange, stopRecording]);
 
