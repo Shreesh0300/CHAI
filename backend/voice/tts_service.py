@@ -3,6 +3,7 @@ Text-to-Speech (TTS) service implementation using Google Gemini GenAI SDK.
 """
 
 import os
+import time
 import logging
 from pathlib import Path
 from typing import Optional, Union, Any
@@ -41,6 +42,7 @@ class TTSService:
             or getattr(self.settings, "gemini_tts_model", "")
             or DEFAULT_TTS_MODEL
         ).strip() or DEFAULT_TTS_MODEL
+        self._gemini_quota_exhausted: bool = False
 
     def _resolve_api_key(self) -> str:
         """Safely resolve API key from voice settings, environment, or backend config."""
@@ -115,8 +117,29 @@ class TTSService:
         text_str = str(text).strip()
         canon_lang = canonicalize_language(language) or DEFAULT_LANGUAGE
 
+        provider = (
+            os.getenv("TTS_PROVIDER")
+            or getattr(self.settings, "tts_provider", "")
+            or "auto"
+        ).strip().lower()
+
+        # If user explicitly configured Google TTS, synthesize directly
+        if provider == "google":
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
+
+        # Fast-path: if this service instance already observed quota exhaustion, route to fallback
+        if self._gemini_quota_exhausted and provider != "gemini":
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
+
         api_key = self._resolve_api_key()
         if not api_key:
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
             raise ValueError("TTS API key is not configured (set GEMINI_API_KEY or TTS_API_KEY).")
 
         from google import genai
@@ -143,13 +166,20 @@ class TTSService:
             except Exception as err:
                 last_error = err
                 err_str = str(err)
-                logger.warning(
-                    f"TTS model '{model_name}' encountered error ({err_str[:80]}). "
-                    f"Trying next fallback model."
-                )
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.info("Gemini TTS daily quota reached. Seamlessly routing to multilingual voice engine.")
+                    self._gemini_quota_exhausted = True
+                    fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+                    if fallback_wav:
+                        return fallback_wav
+                    break
+                logger.debug(f"TTS model '{model_name}' encountered error ({err_str[:60]}). Trying next.")
                 continue
 
         if response is None:
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
             raise RuntimeError(f"All Gemini TTS models exhausted. Last error: {last_error}")
 
         # Extract audio bytes from response parts
@@ -173,6 +203,58 @@ class TTSService:
                         break
 
         if not audio_data:
+            fallback_wav = self._synthesize_fallback(text_str, canon_lang)
+            if fallback_wav:
+                return fallback_wav
             raise RuntimeError("Gemini TTS response did not contain audio data.")
 
         return audio_data
+
+    def _synthesize_fallback(self, text: str, language: str = "en") -> Optional[bytes]:
+        """Synthesize audio using Google TTS or Windows SAPI when cloud GenAI quota is exhausted."""
+        canon_lang = canonicalize_language(language) or DEFAULT_LANGUAGE
+
+        # 1. Try Google Multilingual TTS (authentic native speech for kn, hi, sa, en)
+        try:
+            import urllib.request
+            import urllib.parse
+            encoded = urllib.parse.quote(text)
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={canon_lang}&client=tw-ob"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = resp.read()
+            if len(data) > 100:
+                logger.info(f"Successfully synthesized audio using Google TTS fallback ({canon_lang}).")
+                return data
+        except Exception as e:
+            logger.debug(f"Google TTS fallback unavailable: {e}")
+
+        # 2. Try Local Windows SAPI (offline fallback for English)
+        if canon_lang == "en":
+            try:
+                import win32com.client
+                import tempfile
+                speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                stream = win32com.client.Dispatch("SAPI.SpFileStream")
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    temp_path = tf.name
+                try:
+                    stream.Open(temp_path, 3)  # 3 = SSFMCreateForWrite
+                    speaker.AudioOutputStream = stream
+                    speaker.Speak(text)
+                    stream.Close()
+                    with open(temp_path, "rb") as f:
+                        data = f.read()
+                    if len(data) > 1000:
+                        logger.info("Successfully synthesized audio using Windows SAPI engine fallback.")
+                        return data
+                finally:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"Local Windows SAPI fallback unavailable: {e}")
+
+        return None

@@ -36,6 +36,28 @@ async def main() -> None:
         print(f"Output file: {output_path}")
         print(f"Audio bytes: {len(audio_bytes)}")
         print("Status: Success")
+
+        # Play audio aloud through system speakers
+        try:
+            print("🔊 Playing synthesized speech through system speakers...")
+            header = audio_bytes[:4]
+            is_wav = header.startswith(b"RIFF")
+            if is_wav:
+                try:
+                    import winsound
+                    winsound.PlaySound(str(output_path), winsound.SND_FILENAME)
+                except Exception:
+                    pass
+            else:
+                import ctypes
+                import time
+                mci = ctypes.windll.winmm.mciSendStringW
+                alias = f"test_tts_{int(time.time() * 1000)}"
+                mci(f'open "{output_path.resolve()}" type mpegvideo alias {alias}', None, 0, 0)
+                mci(f"play {alias} wait", None, 0, 0)
+                mci(f"close {alias}", None, 0, 0)
+        except Exception as play_err:
+            print(f"(Speaker playback skipped: {play_err})")
     except Exception as e:
         print(f"Output file: None")
         print(f"Audio bytes: 0")
