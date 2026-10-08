@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { History, LoaderCircle, MessageCircle, Mic, MicOff, PanelRight, Plus, Sparkles, Volume2 } from "lucide-react"
+import { History, LoaderCircle, MessageCircle, PanelRight, Plus, Sparkles } from "lucide-react"
 import { AssistantSpeech } from "@/components/assistant-speech"
 import { ScreenEdgeIllumination } from "@/components/screen-edge-illumination"
 import {
@@ -59,21 +59,18 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [mobilePane, setMobilePane] = useState<MobilePane>("response")
   const [isSpeechAssistantOpen, setIsSpeechAssistantOpen] = useState(false)
+  const [speechAssistantInitialPrompt, setSpeechAssistantInitialPrompt] = useState<string>("")
   const [isWakeWordIlluminated, setIsWakeWordIlluminated] = useState(false)
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null)
   const responseTimer = useRef<number | null>(null)
   const closeHistory = useCallback(() => setHistoryOpen(false), [])
-
-  const [isWakeWordListening, setIsWakeWordListening] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    return localStorage.getItem("chai_wake_word_enabled") === "true"
-  })
 
   // Keyboard shortcut: Alt+V or Alt+C to invoke Voice Assistant instantly
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.altKey && e.key.toLowerCase() === "v") || (e.altKey && e.key.toLowerCase() === "c")) {
         e.preventDefault()
+        setSpeechAssistantInitialPrompt("")
         setIsSpeechAssistantOpen((prev) => !prev)
       }
     }
@@ -81,29 +78,9 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [])
 
-  // Explicit user activation for background Wake Word
-  const toggleWakeWordListening = useCallback(async () => {
-    if (!isWakeWordListening) {
-      try {
-        if (navigator.mediaDevices?.getUserMedia) {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-          stream.getTracks().forEach((t) => t.stop())
-        }
-        setIsWakeWordListening(true)
-        localStorage.setItem("chai_wake_word_enabled", "true")
-      } catch (err) {
-        console.warn("Microphone access denied for wake word:", err)
-        alert("Please allow microphone permissions in your browser to activate 'Hey CHAI' wake word.")
-      }
-    } else {
-      setIsWakeWordListening(false)
-      localStorage.setItem("chai_wake_word_enabled", "false")
-    }
-  }, [isWakeWordListening])
-
-  // Wake word ("Hey CHAI") continuous background detection (only when enabled and assistant closed)
+  // Autonomous Alexa-style background wake word detection across English, Hindi, Kannada, Sanskrit
   useEffect(() => {
-    if (typeof window === "undefined" || !isWakeWordListening || isSpeechAssistantOpen) return
+    if (typeof window === "undefined" || isSpeechAssistantOpen) return
 
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -112,31 +89,65 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
     let recognition: any = null
     let active = true
 
+    // Wake word patterns across all supported languages
+    const WAKE_PATTERNS = [
+      // English: "hey chai", "hi chai", "hello chai", "ok chai", "okay chai", "chai"
+      /(?:^|\b)(?:hey|hi|hello|ok|okay|hay)\s+(?:chai|chye|chaye)\b[\s,:]*/i,
+      // Hindi / Devanagari: "हे चाय", "हाय चाय", "नमस्ते चाय", "सुनो चाय"
+      /(?:^|\b)(?:हे|हाय|नमस्ते|सुनो)\s*चाय[\s,:]*/i,
+      // Kannada: "ಹೇ ಚಾಯ್", "ಹಾಯ್ ಚಾಯ್", "ನಮಸ್ಕಾರ ಚಾಯ್", "ಕೇಳು ಚಾಯ್"
+      /(?:^|\b)(?:ಹೇ|ಹಾಯ್|ನಮಸ್ಕಾರ|ಕೇಳು)\s*ಚಾಯ್[\s,:]*/i,
+      // Sanskrit: "नमस्कारम् चाय", "हे चाय"
+      /(?:^|\b)(?:नमस्कारम्)\s*चाय[\s,:]*/i,
+      // Direct invocation
+      /(?:^|\b)chai\b[\s,:]*/i,
+      /(?:^|\b)चाय[\s,:]*/i,
+      /(?:^|\b)ಚಾಯ್[\s,:]*/i,
+    ]
+
+    function parseWakeWord(transcript: string): { matched: boolean; query: string } {
+      const trimmed = transcript.trim()
+      for (const pat of WAKE_PATTERNS) {
+        const match = trimmed.match(pat)
+        if (match && match.index !== undefined) {
+          const matchEnd = match.index + match[0].length
+          const query = trimmed.slice(matchEnd).replace(/^[\s,:.!?\-]+/, "").trim()
+          return { matched: true, query }
+        }
+      }
+      return { matched: false, query: "" }
+    }
+
     function startWakeWordListener() {
       if (!active || isSpeechAssistantOpen) return
 
       try {
+        if (recognition) {
+          try {
+            recognition.abort()
+          } catch {}
+          recognition = null
+        }
+
         recognition = new SpeechRecognition()
         recognition.continuous = true
         recognition.interimResults = true
-        recognition.lang = "en-US"
+        // en-IN allows Chrome's acoustic model to accurately pick up Indian English,
+        // accents, and multilingual wake-words seamlessly
+        recognition.lang = "en-IN"
 
         recognition.onresult = (event: any) => {
+          if (!active || isSpeechAssistantOpen) return
+
           for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript.toLowerCase()
-            if (
-              transcript.includes("hey chai") ||
-              transcript.includes("hey chye") ||
-              transcript.includes("hay chai") ||
-              transcript.includes("hi chai") ||
-              transcript.includes("hello chai") ||
-              transcript.includes("ok chai") ||
-              transcript.includes("chai")
-            ) {
-              console.log("Wake word 'Hey CHAI' detected:", transcript)
+            const transcript = event.results[i][0].transcript
+            const { matched, query } = parseWakeWord(transcript)
+            if (matched) {
+              console.log("[Alexa-Core] Wake word detected:", transcript, "-> Query:", query)
               setIsWakeWordIlluminated(true)
+              setSpeechAssistantInitialPrompt(query)
               setIsSpeechAssistantOpen(true)
-              setTimeout(() => setIsWakeWordIlluminated(false), 3000)
+              setTimeout(() => setIsWakeWordIlluminated(false), 2500)
               try {
                 recognition.abort()
               } catch {}
@@ -146,39 +157,67 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
         }
 
         recognition.onerror = (e: any) => {
-          if (e.error === "not-allowed") {
-            setIsWakeWordListening(false)
-            localStorage.setItem("chai_wake_word_enabled", "false")
-          }
-        }
-
-        recognition.onend = () => {
-          if (active && !isSpeechAssistantOpen && isWakeWordListening) {
+          // If browser reports temporary pause, auto-restart
+          if (active && !isSpeechAssistantOpen && e.error !== "not-allowed") {
             setTimeout(() => {
               if (active && !isSpeechAssistantOpen) {
                 startWakeWordListener()
               }
-            }, 600)
+            }, 400)
+          }
+        }
+
+        recognition.onend = () => {
+          // Chrome terminates recognition automatically every 15-60s; auto-restart like Alexa
+          if (active && !isSpeechAssistantOpen) {
+            setTimeout(() => {
+              if (active && !isSpeechAssistantOpen) {
+                startWakeWordListener()
+              }
+            }, 250)
           }
         }
 
         recognition.start()
       } catch {
-        // Recognition will resume when user allows or interacts
+        // Retry silently
+        if (active && !isSpeechAssistantOpen) {
+          setTimeout(startWakeWordListener, 1000)
+        }
       }
     }
 
+    // Warm up recognition immediately
     startWakeWordListener()
+
+    // Passive interaction listeners to satisfy strict browser autoplay sandbox rules
+    const handleGestureWarmup = () => {
+      if (active && !isSpeechAssistantOpen) {
+        try {
+          if (navigator.mediaDevices?.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+              stream.getTracks().forEach((t) => t.stop())
+              startWakeWordListener()
+            }).catch(() => {})
+          }
+        } catch {}
+      }
+    }
+
+    window.addEventListener("pointerdown", handleGestureWarmup, { once: true, passive: true })
+    window.addEventListener("keydown", handleGestureWarmup, { once: true, passive: true })
 
     return () => {
       active = false
+      window.removeEventListener("pointerdown", handleGestureWarmup)
+      window.removeEventListener("keydown", handleGestureWarmup)
       if (recognition) {
         try {
           recognition.abort()
         } catch {}
       }
     }
-  }, [isSpeechAssistantOpen, isWakeWordListening])
+  }, [isSpeechAssistantOpen])
 
   useEffect(() => {
     return () => {
@@ -333,50 +372,6 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
               <span className="hidden sm:inline">New chat</span>
               <span className="sm:hidden">New</span>
             </Button>
-
-            {/* Direct Invoke Voice Assistant Button */}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setIsSpeechAssistantOpen(true)}
-              title="Invoke CHAI Voice Core (Shortcut: Alt+V, or say 'Hey CHAI')"
-              className={cn(
-                "relative gap-1.5 border-primary/35 bg-primary/10 text-primary hover:bg-primary/20 shadow-xs transition-all",
-                isWakeWordListening && "ring-1 ring-emerald-500/50"
-              )}
-            >
-              <Mic className="size-3.5 animate-pulse text-primary" />
-              <span className="font-medium">Hey CHAI</span>
-              {isWakeWordListening && (
-                <span className="size-1.5 rounded-full bg-emerald-500 animate-ping" />
-              )}
-            </Button>
-
-            {/* Wake Word Background Listening Toggle */}
-            <button
-              type="button"
-              onClick={toggleWakeWordListening}
-              title={
-                isWakeWordListening
-                  ? "Wake word active: listening for 'Hey CHAI' in background. Click to pause."
-                  : "Click to enable background 'Hey CHAI' continuous wake-word listening"
-              }
-              className={cn(
-                "hidden xl:flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium transition",
-                isWakeWordListening
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
-                  : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
-              )}
-            >
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  isWakeWordListening ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/40"
-                )}
-              />
-              <span>{isWakeWordListening ? "Wake Word: On" : "Wake Word: Off"}</span>
-            </button>
 
             <div className="relative shrink-0">
               <button
@@ -540,7 +535,13 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
         {/* Futuristic AI Voice Assistant Centerpiece Modal */}
         {isSpeechAssistantOpen && (
           <div className="fixed inset-0 z-50 animate-in fade-in zoom-in-95 duration-300">
-            <AssistantSpeech onBack={() => setIsSpeechAssistantOpen(false)} />
+            <AssistantSpeech
+              initialPrompt={speechAssistantInitialPrompt}
+              onBack={() => {
+                setIsSpeechAssistantOpen(false)
+                setSpeechAssistantInitialPrompt("")
+              }}
+            />
           </div>
         )}
       </main>

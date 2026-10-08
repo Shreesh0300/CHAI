@@ -100,6 +100,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
   const [inputValue, setInputValue] = useState("")
   const [isAudioMuted, setIsAudioMuted] = useState(false)
   const [activeSection, setActiveSection] = useState<ActiveSection>("none")
+  const [voiceLocale, setVoiceLocale] = useState<string>("en-IN")
 
   // Push to side layout states
   const [hasExecutedCommand, setHasExecutedCommand] = useState(false)
@@ -222,6 +223,16 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     }
   }, [])
 
+  // Script and language detection helper (Kannada, Hindi/Sanskrit, English)
+  const detectScriptLanguage = useCallback((text: string): "kn" | "hi" | "sa" | "en" => {
+    if (!text) return "en"
+    const knCount = (text.match(/[\u0C80-\u0CFF]/g) || []).length
+    const hiCount = (text.match(/[\u0900-\u097F]/g) || []).length
+    if (knCount > 0 && knCount >= hiCount) return "kn"
+    if (hiCount > 0) return "hi"
+    return "en"
+  }, [])
+
   // Text cleaning helper for speech synthesis
   const cleanTextForSpeech = useCallback((text: string): string => {
     if (!text) return ""
@@ -268,20 +279,43 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
           utterance.rate = 1.02
           utterance.pitch = 1.0
 
+          const lang = detectScriptLanguage(clean)
           const voices = window.speechSynthesis.getVoices()
-          const chosenVoice =
-            voices.find(
-              (v) =>
-                v.lang.startsWith("en") &&
-                (v.name.includes("Natural") ||
-                  v.name.includes("Google") ||
-                  v.name.includes("Samantha") ||
-                  v.name.includes("Jenny") ||
-                  v.name.includes("Guy") ||
-                  v.name.includes("David")),
-            ) ||
-            voices.find((v) => v.lang.startsWith("en")) ||
-            voices[0]
+          let chosenVoice: SpeechSynthesisVoice | null = null
+
+          if (lang === "kn") {
+            utterance.lang = "kn-IN"
+            chosenVoice =
+              voices.find((v) => v.lang.toLowerCase().startsWith("kn")) ||
+              voices.find((v) => v.name.toLowerCase().includes("kannada")) ||
+              null
+          } else if (lang === "hi" || lang === "sa") {
+            utterance.lang = "hi-IN"
+            chosenVoice =
+              voices.find((v) => v.lang.toLowerCase().startsWith("hi") || v.lang.toLowerCase().startsWith("sa")) ||
+              voices.find((v) => v.name.toLowerCase().includes("hindi") || v.name.includes("हिन्दी") || v.name.toLowerCase().includes("kalpana") || v.name.toLowerCase().includes("hemant")) ||
+              null
+          }
+
+          if (!chosenVoice) {
+            utterance.lang = "en-IN"
+            chosenVoice =
+              voices.find(
+                (v) =>
+                  v.lang.toLowerCase().startsWith("en") &&
+                  (v.name.includes("Natural") ||
+                    v.name.includes("Google") ||
+                    v.name.includes("Samantha") ||
+                    v.name.includes("Jenny") ||
+                    v.name.includes("Guy") ||
+                    v.name.includes("David") ||
+                    v.name.includes("Ravi") ||
+                    v.name.includes("Heera")),
+              ) ||
+              voices.find((v) => v.lang.toLowerCase().startsWith("en")) ||
+              voices[0] ||
+              null
+          }
 
           if (chosenVoice) {
             utterance.voice = chosenVoice
@@ -342,6 +376,27 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       const clean = queryText.trim()
       if (!clean) return
 
+      // Hands-free exit / dismiss voice commands (Alexa-style)
+      const lowerQuery = clean.toLowerCase().replace(/[.!?]/g, "").trim()
+      const isExit = [
+        "close", "exit", "stop", "go back", "bye", "goodbye", "quit",
+        "अलविदा", "बंद करो", "रुक जाओ",
+        "ಮುಚ್ಚು", "ಸಾಕು", "ಬಾಯ್", "ಹಿಂದಕ್ಕೆ ಹೋಗು",
+      ].some((cmd) => lowerQuery === cmd || lowerQuery === `hey chai ${cmd}` || lowerQuery === `chai ${cmd}`)
+
+      if (isExit) {
+        const exitMsg = clean.match(/[\u0C80-\u0CFF]/)
+          ? "ಧನ್ಯವಾದಗಳು! ಮತ್ತೆ ಭೇಟಿಯಾಗೋಣ."
+          : clean.match(/[\u0900-\u097F]/)
+          ? "अलविदा! फिर मिलेंगे।"
+          : "Goodbye! CHAI standing by."
+        speakText(exitMsg)
+        setTimeout(() => {
+          onBack?.()
+        }, 1200)
+        return
+      }
+
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current)
         silenceTimerRef.current = null
@@ -359,6 +414,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       setForceCenterView(false)
 
       const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      const queryLang = detectScriptLanguage(clean)
 
       // Add to transcript
       const userEntry: TranscriptEntry = {
@@ -376,7 +432,10 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         const res = await fetch("http://localhost:8000/api/solve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ problem: clean }),
+          body: JSON.stringify({
+            problem: clean,
+            language: queryLang !== "en" ? queryLang : undefined,
+          }),
         })
 
         if (!res.ok) throw new Error("API solve endpoint offline")
@@ -408,9 +467,15 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
         isProcessingRef.current = false
         speakText(aiAnswer)
-      } catch (err) {
+      } catch {
         setTimeout(() => {
-          const fallbackAnswer = `Analysis complete for "${clean}". All CHAI agent parameters remain operational.`
+          let fallbackAnswer = `Analysis complete for "${clean}". All CHAI agent parameters remain operational.`
+          if (queryLang === "kn") {
+            fallbackAnswer = `ವಿಶ್ಲೇಷಣೆ ಪೂರ್ಣಗೊಂಡಿದೆ: "${clean}". CHAI ನ ಎಲ್ಲಾ ಏಜೆಂಟ್‌ಗಳು ಸಕ್ರಿಯವಾಗಿವೆ.`
+          } else if (queryLang === "hi") {
+            fallbackAnswer = `विश्लेषण पूर्ण: "${clean}". CHAI के सभी एजेंट सक्रिय हैं।`
+          }
+
           const assistantEntry: TranscriptEntry = {
             id: `ai-${Date.now()}`,
             role: "assistant",
@@ -435,7 +500,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         }, 800)
       }
     },
-    [speakText],
+    [speakText, onBack, detectScriptLanguage],
   )
 
   // Dedicated Continuous Speech Recognition Controller with Silence Detection
@@ -458,7 +523,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       const recognition = new SpeechRecognition()
       recognition.continuous = true
       recognition.interimResults = true
-      recognition.lang = "en-US"
+      recognition.lang = voiceLocale || "en-IN"
       recognition.maxAlternatives = 1
 
       recognition.onstart = () => {
@@ -591,12 +656,28 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     startRecognition()
   }, [voiceState, startAudioCapture, stopAudioCapture, startRecognition])
 
+  // Language switcher handler
+  const handleLanguageChange = useCallback((newLocale: string) => {
+    setVoiceLocale(newLocale)
+    if (isListeningRef.current && !isProcessingRef.current) {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort()
+        } catch {}
+      }
+      setTimeout(() => {
+        startRecognitionRef.current?.()
+      }, 150)
+    }
+  }, [])
+
   useEffect(() => {
-    if (initialPrompt) {
-      handleProcessQuery(initialPrompt)
+    isListeningRef.current = true
+    startAudioCapture()
+
+    if (initialPrompt && initialPrompt.trim()) {
+      handleProcessQuery(initialPrompt.trim())
     } else {
-      isListeningRef.current = true
-      startAudioCapture()
       startRecognition()
     }
 
@@ -798,6 +879,66 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
               <span>{forceCenterView ? "Split Results" : "Center Orb"}</span>
             </button>
           )}
+
+          {/* Multilingual Voice Locale Selector */}
+          <div
+            className={cn(
+              "flex items-center rounded-xl border p-0.5 text-xs transition",
+              isDark ? "border-white/10 bg-white/5" : "border-slate-200 bg-slate-100",
+            )}
+          >
+            <button
+              type="button"
+              onClick={() => handleLanguageChange("en-IN")}
+              className={cn(
+                "rounded-lg px-2 py-1 text-[11px] font-medium transition",
+                voiceLocale === "en-IN"
+                  ? isDark
+                    ? "bg-cyan-500/25 text-cyan-300 font-semibold shadow-xs"
+                    : "bg-cyan-600 text-white font-semibold shadow-xs"
+                  : isDark
+                  ? "text-white/60 hover:text-white"
+                  : "text-slate-600 hover:text-slate-900",
+              )}
+              title="English (India / Global)"
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              onClick={() => handleLanguageChange("hi-IN")}
+              className={cn(
+                "rounded-lg px-2 py-1 text-[11px] font-medium transition",
+                voiceLocale === "hi-IN"
+                  ? isDark
+                    ? "bg-purple-500/30 text-purple-300 font-semibold shadow-xs"
+                    : "bg-purple-600 text-white font-semibold shadow-xs"
+                  : isDark
+                  ? "text-white/60 hover:text-white"
+                  : "text-slate-600 hover:text-slate-900",
+              )}
+              title="Hindi (हिंदी)"
+            >
+              हिन्दी
+            </button>
+            <button
+              type="button"
+              onClick={() => handleLanguageChange("kn-IN")}
+              className={cn(
+                "rounded-lg px-2 py-1 text-[11px] font-medium transition",
+                voiceLocale === "kn-IN"
+                  ? isDark
+                    ? "bg-amber-500/30 text-amber-300 font-semibold shadow-xs"
+                    : "bg-amber-600 text-white font-semibold shadow-xs"
+                  : isDark
+                  ? "text-white/60 hover:text-white"
+                  : "text-slate-600 hover:text-slate-900",
+              )}
+              title="Kannada (ಕನ್ನಡ)"
+            >
+              ಕನ್ನಡ
+            </button>
+          </div>
 
           <button
             type="button"
