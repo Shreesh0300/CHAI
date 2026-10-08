@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { History, LoaderCircle, MessageCircle, PanelRight, Plus, Sparkles } from "lucide-react"
+import { History, LoaderCircle, MessageCircle, Mic, MicOff, PanelRight, Plus, Sparkles, Volume2 } from "lucide-react"
 import { AssistantSpeech } from "@/components/assistant-speech"
 import { ScreenEdgeIllumination } from "@/components/screen-edge-illumination"
 import {
@@ -64,9 +64,46 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
   const responseTimer = useRef<number | null>(null)
   const closeHistory = useCallback(() => setHistoryOpen(false), [])
 
-  // Wake word ("Hey CHAI") continuous background detection
+  const [isWakeWordListening, setIsWakeWordListening] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    return localStorage.getItem("chai_wake_word_enabled") === "true"
+  })
+
+  // Keyboard shortcut: Alt+V or Alt+C to invoke Voice Assistant instantly
   useEffect(() => {
-    if (typeof window === "undefined") return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.altKey && e.key.toLowerCase() === "v") || (e.altKey && e.key.toLowerCase() === "c")) {
+        e.preventDefault()
+        setIsSpeechAssistantOpen((prev) => !prev)
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [])
+
+  // Explicit user activation for background Wake Word
+  const toggleWakeWordListening = useCallback(async () => {
+    if (!isWakeWordListening) {
+      try {
+        if (navigator.mediaDevices?.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          stream.getTracks().forEach((t) => t.stop())
+        }
+        setIsWakeWordListening(true)
+        localStorage.setItem("chai_wake_word_enabled", "true")
+      } catch (err) {
+        console.warn("Microphone access denied for wake word:", err)
+        alert("Please allow microphone permissions in your browser to activate 'Hey CHAI' wake word.")
+      }
+    } else {
+      setIsWakeWordListening(false)
+      localStorage.setItem("chai_wake_word_enabled", "false")
+    }
+  }, [isWakeWordListening])
+
+  // Wake word ("Hey CHAI") continuous background detection (only when enabled and assistant closed)
+  useEffect(() => {
+    if (typeof window === "undefined" || !isWakeWordListening || isSpeechAssistantOpen) return
 
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -92,26 +129,31 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
               transcript.includes("hey chye") ||
               transcript.includes("hay chai") ||
               transcript.includes("hi chai") ||
-              transcript.includes("ok chai")
+              transcript.includes("hello chai") ||
+              transcript.includes("ok chai") ||
+              transcript.includes("chai")
             ) {
               console.log("Wake word 'Hey CHAI' detected:", transcript)
               setIsWakeWordIlluminated(true)
               setIsSpeechAssistantOpen(true)
               setTimeout(() => setIsWakeWordIlluminated(false), 3000)
               try {
-                recognition.stop()
+                recognition.abort()
               } catch {}
               break
             }
           }
         }
 
-        recognition.onerror = () => {
-          // Ignore normal recognition errors
+        recognition.onerror = (e: any) => {
+          if (e.error === "not-allowed") {
+            setIsWakeWordListening(false)
+            localStorage.setItem("chai_wake_word_enabled", "false")
+          }
         }
 
         recognition.onend = () => {
-          if (active && !isSpeechAssistantOpen) {
+          if (active && !isSpeechAssistantOpen && isWakeWordListening) {
             setTimeout(() => {
               if (active && !isSpeechAssistantOpen) {
                 startWakeWordListener()
@@ -136,7 +178,7 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
         } catch {}
       }
     }
-  }, [isSpeechAssistantOpen])
+  }, [isSpeechAssistantOpen, isWakeWordListening])
 
   useEffect(() => {
     return () => {
@@ -291,6 +333,50 @@ export function ChatWorkspace({ user }: { user: ProfileMenuUser | null }) {
               <span className="hidden sm:inline">New chat</span>
               <span className="sm:hidden">New</span>
             </Button>
+
+            {/* Direct Invoke Voice Assistant Button */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsSpeechAssistantOpen(true)}
+              title="Invoke CHAI Voice Core (Shortcut: Alt+V, or say 'Hey CHAI')"
+              className={cn(
+                "relative gap-1.5 border-primary/35 bg-primary/10 text-primary hover:bg-primary/20 shadow-xs transition-all",
+                isWakeWordListening && "ring-1 ring-emerald-500/50"
+              )}
+            >
+              <Mic className="size-3.5 animate-pulse text-primary" />
+              <span className="font-medium">Hey CHAI</span>
+              {isWakeWordListening && (
+                <span className="size-1.5 rounded-full bg-emerald-500 animate-ping" />
+              )}
+            </Button>
+
+            {/* Wake Word Background Listening Toggle */}
+            <button
+              type="button"
+              onClick={toggleWakeWordListening}
+              title={
+                isWakeWordListening
+                  ? "Wake word active: listening for 'Hey CHAI' in background. Click to pause."
+                  : "Click to enable background 'Hey CHAI' continuous wake-word listening"
+              }
+              className={cn(
+                "hidden xl:flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium transition",
+                isWakeWordListening
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
+                  : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              <span
+                className={cn(
+                  "size-1.5 rounded-full",
+                  isWakeWordListening ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/40"
+                )}
+              />
+              <span>{isWakeWordListening ? "Wake Word: On" : "Wake Word: Off"}</span>
+            </button>
 
             <div className="relative shrink-0">
               <button

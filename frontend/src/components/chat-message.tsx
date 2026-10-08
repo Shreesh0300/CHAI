@@ -1,4 +1,5 @@
-import { FileText, Sparkles } from "lucide-react"
+import { useState } from "react"
+import { FileText, Sparkles, Volume2, VolumeX } from "lucide-react"
 import type { ChatMessage } from "@/components/chat-types"
 import {
   Attachment,
@@ -18,6 +19,52 @@ import { cn } from "@/lib/utils"
 
 export function ChatMessageRow({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user"
+  const [isSpeaking, setIsSpeaking] = useState(false)
+
+  const handleSpeak = () => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return
+    if (isSpeaking) {
+      window.speechSynthesis.cancel()
+      setIsSpeaking(false)
+      return
+    }
+
+    window.speechSynthesis.cancel()
+    const clean = message.content
+      .replace(/```[\s\S]*?```/g, "Code block omitted.")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/[*_~#>]/g, "")
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(clean)
+      utterance.rate = 1.02
+      const voices = window.speechSynthesis.getVoices()
+      const voice =
+        voices.find(
+          (v) =>
+            v.lang.startsWith("en") &&
+            (v.name.includes("Natural") ||
+              v.name.includes("Google") ||
+              v.name.includes("Samantha") ||
+              v.name.includes("Jenny") ||
+              v.name.includes("Guy")),
+        ) ||
+        voices.find((v) => v.lang.startsWith("en")) ||
+        voices[0]
+      if (voice) utterance.voice = voice
+
+      utterance.onstart = () => setIsSpeaking(true)
+      utterance.onend = () => setIsSpeaking(false)
+      utterance.onerror = () => setIsSpeaking(false)
+
+      ;(window as any)._chaiRowUtterance = utterance
+      if (window.speechSynthesis.paused) window.speechSynthesis.resume()
+      window.speechSynthesis.speak(utterance)
+    }, 50)
+  }
 
   return (
     <Message
@@ -35,9 +82,24 @@ export function ChatMessageRow({ message }: { message: ChatMessage }) {
           isUser ? "max-w-[min(100%,700px)] items-end" : "max-w-[min(100%,740px)] items-start",
         )}
       >
-        <MessageHeader className="px-1 text-[11px] font-medium text-muted-foreground">
-          {isUser ? "You" : "CHAI"}
-        </MessageHeader>
+        <div className="flex items-center justify-between w-full px-1 text-[11px] font-medium text-muted-foreground">
+          <span>{isUser ? "You" : "CHAI"}</span>
+          {!isUser && (
+            <button
+              type="button"
+              onClick={handleSpeak}
+              aria-label={isSpeaking ? "Stop voice" : "Read response aloud"}
+              title={isSpeaking ? "Stop voice" : "Read response aloud"}
+              className={cn(
+                "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition hover:bg-muted hover:text-foreground",
+                isSpeaking && "text-primary font-semibold animate-pulse"
+              )}
+            >
+              {isSpeaking ? <VolumeX className="size-3 text-destructive" /> : <Volume2 className="size-3" />}
+              <span>{isSpeaking ? "Stop" : "Read aloud"}</span>
+            </button>
+          )}
+        </div>
         <Bubble
           align={isUser ? "end" : "start"}
           variant={isUser ? "secondary" : "ghost"}

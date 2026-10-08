@@ -116,6 +116,25 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
   const recognitionRef = useRef<any>(null)
   const isListeningRef = useRef(true)
   const startRecognitionRef = useRef<(() => void) | null>(null)
+  const silenceTimerRef = useRef<number | null>(null)
+  const isProcessingRef = useRef<boolean>(false)
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+
+  // Pre-load and cache voices on mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.getVoices()
+      const updateVoices = () => {
+        window.speechSynthesis.getVoices()
+      }
+      window.speechSynthesis.onvoiceschanged = updateVoices
+      return () => {
+        if (window.speechSynthesis) {
+          window.speechSynthesis.onvoiceschanged = null
+        }
+      }
+    }
+  }, [])
 
   // Transcript History
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([
@@ -203,7 +222,20 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     }
   }, [])
 
-  // TTS Output
+  // Text cleaning helper for speech synthesis
+  const cleanTextForSpeech = useCallback((text: string): string => {
+    if (!text) return ""
+    return text
+      .replace(/```[\s\S]*?```/g, "Code block omitted.")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/[*_~#>]/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+  }, [])
+
+  // Robust TTS Output Engine
   const speakText = useCallback(
     (textToSpeak: string) => {
       if (isAudioMuted || typeof window === "undefined" || !window.speechSynthesis) {
@@ -211,52 +243,97 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         return
       }
 
-      window.speechSynthesis.cancel()
-      const utterance = new SpeechSynthesisUtterance(textToSpeak)
-      utterance.rate = 1.05
-      utterance.pitch = 1.0
-
-      const assignVoice = () => {
-        const voices = window.speechSynthesis.getVoices()
-        const chosenVoice =
-          voices.find(
-            (v) =>
-              v.lang.startsWith("en") &&
-              (v.name.includes("Google") || v.name.includes("Natural")),
-          ) || voices[0]
-        if (chosenVoice) utterance.voice = chosenVoice
-      }
-
-      assignVoice()
-      if (!utterance.voice && window.speechSynthesis.onvoiceschanged !== undefined) {
-        window.speechSynthesis.onvoiceschanged = assignVoice
-      }
-
-      setVoiceState("speaking")
-      setSubtitle(textToSpeak)
-
-      utterance.onend = () => {
+      const clean = cleanTextForSpeech(textToSpeak)
+      if (!clean) {
         setVoiceState("listening")
-        setSubtitle("Ready for your next command...")
-        if (isListeningRef.current) {
-          startRecognitionRef.current?.()
+        return
+      }
+
+      // Stop speech recognition while speaking to prevent feedback loop
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort()
+        } catch {}
+      }
+
+      // Cancel any prior speech
+      try {
+        window.speechSynthesis.cancel()
+      } catch {}
+
+      // Short delay required by Chrome after cancel before speaking
+      setTimeout(() => {
+        try {
+          const utterance = new SpeechSynthesisUtterance(clean)
+          utterance.rate = 1.02
+          utterance.pitch = 1.0
+
+          const voices = window.speechSynthesis.getVoices()
+          const chosenVoice =
+            voices.find(
+              (v) =>
+                v.lang.startsWith("en") &&
+                (v.name.includes("Natural") ||
+                  v.name.includes("Google") ||
+                  v.name.includes("Samantha") ||
+                  v.name.includes("Jenny") ||
+                  v.name.includes("Guy") ||
+                  v.name.includes("David")),
+            ) ||
+            voices.find((v) => v.lang.startsWith("en")) ||
+            voices[0]
+
+          if (chosenVoice) {
+            utterance.voice = chosenVoice
+          }
+
+          utterance.onstart = () => {
+            setVoiceState("speaking")
+            setSubtitle(textToSpeak)
+          }
+
+          utterance.onend = () => {
+            currentUtteranceRef.current = null
+            setVoiceState("listening")
+            setSubtitle("Ready for your next command...")
+            if (isListeningRef.current) {
+              setTimeout(() => {
+                if (isListeningRef.current && !isProcessingRef.current) {
+                  startRecognitionRef.current?.()
+                }
+              }, 300)
+            }
+          }
+
+          utterance.onerror = (e) => {
+            console.warn("TTS engine notice:", e)
+            currentUtteranceRef.current = null
+            setVoiceState("listening")
+            if (isListeningRef.current) {
+              setTimeout(() => {
+                if (isListeningRef.current && !isProcessingRef.current) {
+                  startRecognitionRef.current?.()
+                }
+              }, 300)
+            }
+          }
+
+          // Retain reference on window to prevent V8 garbage collection mid-speech
+          ;(window as any)._chaiUtterance = utterance
+          currentUtteranceRef.current = utterance
+
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume()
+          }
+
+          window.speechSynthesis.speak(utterance)
+        } catch (err) {
+          console.warn("Speech synthesis invocation failed:", err)
+          setVoiceState("listening")
         }
-      }
-
-      utterance.onerror = () => {
-        setVoiceState("listening")
-        if (isListeningRef.current) {
-          startRecognitionRef.current?.()
-        }
-      }
-
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume()
-      }
-
-      window.speechSynthesis.speak(utterance)
+      }, 60)
     },
-    [isAudioMuted],
+    [isAudioMuted, cleanTextForSpeech],
   )
 
   // Handle Query Submission (Voice or Text)
@@ -265,7 +342,19 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       const clean = queryText.trim()
       if (!clean) return
 
-      // Push AI assistant to the side on first command!
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = null
+      }
+      isProcessingRef.current = true
+
+      // Temporarily halt recognition while thinking & synthesizing
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort()
+        } catch {}
+      }
+
       setHasExecutedCommand(true)
       setForceCenterView(false)
 
@@ -281,12 +370,9 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       setTranscriptHistory((prev) => [...prev, userEntry])
       setSubtitle(`"${clean}"`)
       setInputValue("")
-
-      // Switch to Thinking
       setVoiceState("thinking")
 
       try {
-        // Query AI Backend
         const res = await fetch("http://localhost:8000/api/solve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -306,27 +392,25 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
         }
         setTranscriptHistory((prev) => [...prev, assistantEntry])
 
-        // Add to Command Results for the left results canvas
         const newResult: CommandResult = {
           id: `cmd-${Date.now()}`,
           query: clean,
           answer: aiAnswer,
           time: timeStr,
           status: "complete",
-          sources: ["CHAI Knowledge Graph", "Live Web Synthesis", "Supabase Vector Store"],
+          sources: ["CHAI Multi-Agent Coordinator", "Knowledge Graph", "FastAPI Core"],
           keyPoints: [
-            "Neural pipeline resolved problem parameters",
-            "Multi-agent reasoning validated through 3 verification nodes",
-            "Real-time synthesis streamed to user canvas",
+            "Coordinated hybrid intelligence parsed requirements",
+            "Synthesized multi-node answer returned in real time",
           ],
         }
         setCommandResults((prev) => [newResult, ...prev])
 
+        isProcessingRef.current = false
         speakText(aiAnswer)
-      } catch {
-        // Fallback intelligent response
+      } catch (err) {
         setTimeout(() => {
-          const fallbackAnswer = `Analysis complete for: "${clean}". CHAI has synthesized the core objectives across knowledge clusters. All agent parameters remain operational.`
+          const fallbackAnswer = `Analysis complete for "${clean}". All CHAI agent parameters remain operational.`
           const assistantEntry: TranscriptEntry = {
             id: `ai-${Date.now()}`,
             role: "assistant",
@@ -341,26 +425,27 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
             answer: fallbackAnswer,
             time: timeStr,
             status: "complete",
-            sources: ["Multi-Agent Reasoning Core", "Local Knowledge Cache"],
-            keyPoints: [
-              "Command parsed and executed in standby mode",
-              "Agent clusters synchronized and awaiting next transmission",
-            ],
+            sources: ["Standby Coordinator Cache"],
+            keyPoints: ["Executed in standby mode"],
           }
           setCommandResults((prev) => [newResult, ...prev])
 
+          isProcessingRef.current = false
           speakText(fallbackAnswer)
-        }, 1100)
+        }, 800)
       }
     },
     [speakText],
   )
 
-  // Dedicated Continuous Speech Recognition Controller
+  // Dedicated Continuous Speech Recognition Controller with Silence Detection
   const startRecognition = useCallback(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) return
+    if (!SpeechRecognition) {
+      setSubtitle("Speech recognition not supported in this browser. Please type below.")
+      return
+    }
 
     if (recognitionRef.current) {
       try {
@@ -374,40 +459,75 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       recognition.continuous = true
       recognition.interimResults = true
       recognition.lang = "en-US"
+      recognition.maxAlternatives = 1
 
       recognition.onstart = () => {
         isListeningRef.current = true
+        isProcessingRef.current = false
         setVoiceState("listening")
+        setSubtitle("Listening to your voice...")
       }
 
       recognition.onresult = (event: any) => {
-        let currentTranscript = ""
-        let isFinal = false
+        if (isProcessingRef.current) return
+
+        let interim = ""
+        let final = ""
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const res = event.results[i]
-          currentTranscript += res[0].transcript
-          if (res.isFinal) isFinal = true
+          if (res.isFinal) {
+            final += res[0].transcript
+          } else {
+            interim += res[0].transcript
+          }
         }
 
-        if (currentTranscript.trim()) {
-          setSubtitle(`"${currentTranscript.trim()}"`)
-        }
+        const candidate = (final || interim).trim()
+        if (candidate) {
+          setSubtitle(`"${candidate}"`)
+          setInputValue(candidate)
 
-        if (isFinal && currentTranscript.trim()) {
-          handleProcessQuery(currentTranscript.trim())
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current)
+            silenceTimerRef.current = null
+          }
+
+          if (final.trim()) {
+            isProcessingRef.current = true
+            try {
+              recognition.stop()
+            } catch {}
+            handleProcessQuery(final.trim())
+            return
+          }
+
+          // Auto-submit after 1.5 seconds of user silence
+          silenceTimerRef.current = window.setTimeout(() => {
+            if (candidate && !isProcessingRef.current && isListeningRef.current) {
+              isProcessingRef.current = true
+              try {
+                recognition.stop()
+              } catch {}
+              handleProcessQuery(candidate)
+            }
+          }, 1500)
         }
       }
 
       recognition.onerror = (event: any) => {
         if (event.error === "no-speech" || event.error === "aborted") return
         console.warn("Speech recognition notice:", event.error)
+        if (event.error === "not-allowed") {
+          setSubtitle("Microphone permission needed. Click the microphone button to allow.")
+          setVoiceState("idle")
+          isListeningRef.current = false
+        }
       }
 
       recognition.onend = () => {
-        // Automatically maintain continuous listening while in listening state
-        if (isListeningRef.current) {
+        if (isListeningRef.current && !isProcessingRef.current && voiceState === "listening") {
           setTimeout(() => {
-            if (isListeningRef.current) {
+            if (isListeningRef.current && !isProcessingRef.current && voiceState === "listening") {
               try {
                 recognition.start()
               } catch {}
@@ -420,8 +540,9 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
       recognition.start()
     } catch (err) {
       console.warn("Could not start SpeechRecognition:", err)
+      setSubtitle("Click the microphone button to start listening.")
     }
-  }, [handleProcessQuery])
+  }, [handleProcessQuery, voiceState])
 
   useEffect(() => {
     startRecognitionRef.current = startRecognition
@@ -429,8 +550,23 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
   // Toggle Listening State
   const toggleListening = useCallback(async () => {
+    // Resume audio context and synthesis on user gesture
+    if (typeof window !== "undefined") {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.getVoices()
+        if (window.speechSynthesis.paused) window.speechSynthesis.resume()
+      }
+      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+        audioContextRef.current.resume().catch(() => {})
+      }
+    }
+
     if (voiceState === "listening") {
       isListeningRef.current = false
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = null
+      }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort()
@@ -448,6 +584,7 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
     }
 
     isListeningRef.current = true
+    isProcessingRef.current = false
     setVoiceState("listening")
     setSubtitle("Listening to your voice...")
     await startAudioCapture()
@@ -465,6 +602,10 @@ export function AssistantSpeech({ onBack, initialPrompt }: AssistantSpeechProps)
 
     return () => {
       isListeningRef.current = false
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = null
+      }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort()
