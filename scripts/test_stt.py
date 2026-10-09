@@ -60,6 +60,7 @@ async def main() -> None:
     print("--- STT Result ---")
     print(f"Text: {response.text}")
     print(f"Language: {response.language}")
+    print(f"Wake Word Detected: {response.wake_word_detected} (phrase: '{response.wake_phrase}')" if response.wake_word_detected else "Wake Word Detected: False")
     print(f"Error: {response.error}")
 
     if not response.text and response.success:

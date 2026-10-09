@@ -54,34 +54,24 @@ function MorphingText({ text }: { text: string }) {
 }
 
 function ModelIcon({ model, className }: { model: string; className?: string }) {
-  if (model === "Business") {
-    return (
-      <svg className={cn("size-3.5 object-contain text-blue-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect width="20" height="14" x="2" y="7" rx="2" />
-        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-      </svg>
-    );
-  }
-  if (model === "Personal") {
-    return (
-      <svg className={cn("size-3.5 object-contain text-emerald-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-        <circle cx="12" cy="7" r="4" />
-      </svg>
-    );
-  }
-  if (model === "Software") {
-    return (
-      <svg className={cn("size-3.5 object-contain text-amber-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="16 18 22 12 16 6" />
-        <polyline points="8 6 2 12 8 18" />
-      </svg>
-    );
-  }
+  const icons: Record<string, string> = {
+    "Composer 2.5": "https://cdn.21st.dev/assets/mirror/7d/7dc00bc09f225fcda46cbc9c6b669c69c025a231877d6c17baa6a003f04f02b2.svg",
+    "Gemini 3.5 Flash": "https://cdn.21st.dev/assets/mirror/cd/cda2df6631d5fa227de3fa04ed78cf354f910ba92a9f086e7455655c10ad9d09.svg",
+    "GPT 5.5": "https://cdn.21st.dev/assets/mirror/b9/b93fa7942be639a1dae60194ff12141145d7d9fd59581582d6ff23335755f19c.svg",
+    "Opus 4.8": "https://cdn.21st.dev/assets/mirror/5d/5de1221c77cc91e748066fd642ad0eee1c1fa65328814f5178166f901e599709.svg",
+    "GLM 5.2": "https://cdn.21st.dev/assets/mirror/b2/b2a6c0ff63efd8a555edf8a174ea6fcfeca120ac1595a2d461ca11d3ae89276c.svg"
+  };
+
+  const filters: Record<string, string> = {
+    "GPT 5.5": "dark:invert", 
+  };
+
   return (
-    <svg className={cn("size-3.5 object-contain text-purple-400", className)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
-    </svg>
+    <img 
+      src={icons[model] || icons["GPT 5.5"]} 
+      alt={model} 
+      className={cn("object-contain", filters[model], className)} 
+    />
   );
 }
 
@@ -322,7 +312,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       onSubmit,
       placeholder = "Ask anything",
       className,
-      models = ["Auto", "Business", "Personal", "Software"],
+      models = ["GPT 5.5", "Opus 4.8", "Gemini 3.5 Flash", "Composer 2.5", "GLM 5.2"],
       efforts = ["Low", "Medium", "Max Effort"],
       defaultValue = "",
       value: controlledValue,
@@ -348,6 +338,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     // Refs for Web Audio & Speech Recognition cleanup
     const streamRef = useRef<MediaStream | null>(null);
+    const promptMediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const rafRef = useRef<number | null>(null);
     const recognitionRef = useRef<any>(null);
@@ -402,6 +393,12 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     // --- Voice Recording Logic ---
     const stopRecording = useCallback(() => {
+      if (promptMediaRecorderRef.current && promptMediaRecorderRef.current.state !== "inactive") {
+        try {
+          promptMediaRecorderRef.current.stop();
+        } catch {}
+        promptMediaRecorderRef.current = null;
+      }
       if (recognitionRef.current) {
         recognitionRef.current.stop();
         recognitionRef.current = null;
@@ -445,6 +442,23 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
       setIsRecording(true);
 
+      // Simulation function for tight sandbox environments
+      function simulateText() {
+        const fakeText = "Can you build a high fidelity Framer Motion layout animation for a dark mode dashboard?";
+        const words = fakeText.split(" ");
+        let i = 0;
+        let currentBase = valueRef.current;
+        demoTextIntervalRef.current = window.setInterval(() => {
+          if (i < words.length) {
+            currentBase = (currentBase ? currentBase + " " : "") + words[i];
+            handleValueChange(currentBase);
+            i++;
+          } else {
+            stopRecording();
+          }
+        }, 300);
+      }
+
       if (stream) {
         streamRef.current = stream;
         
@@ -476,51 +490,73 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
         };
         updateVisualizer();
 
-        // Setup Speech Recognition
-        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        if (SpeechRecognition) {
-          const recognition = new SpeechRecognition();
-          recognition.continuous = true;
-          recognition.interimResults = true;
+        // Setup MediaRecorder for CHAI backend STT
+        let mimeType = "audio/webm;codecs=opus";
+        if (typeof MediaRecorder !== "undefined") {
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = "audio/webm";
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = "";
+            }
+          }
+        }
 
-          let baseline = valueRef.current;
+        try {
+          const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+          promptMediaRecorderRef.current = recorder;
+          const chunks: Blob[] = [];
 
-          recognition.onresult = (event: any) => {
-            let interimTranscript = "";
-            let finalTranscript = "";
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              chunks.push(event.data);
+            }
+          };
 
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-              if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript;
-              } else {
-                interimTranscript += event.results[i][0].transcript;
+          recorder.onstop = async () => {
+            if (!chunks.length) return;
+            const audioBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            if (audioBlob.size < 150) return;
+
+            try {
+              const formData = new FormData();
+              formData.append("audio", audioBlob, "recording.webm");
+
+              let res = await fetch("http://localhost:8000/api/voice/stt", {
+                method: "POST",
+                body: formData,
+              });
+
+              if (!res.ok) {
+                res = await fetch("http://localhost:8000/api/stt", {
+                  method: "POST",
+                  body: formData,
+                });
               }
+
+              if (res.ok) {
+                const data = await res.json();
+                const transcript = (data.text || data.transcript || "").trim();
+                if (transcript) {
+                  const currentBase = valueRef.current;
+                  handleValueChange(currentBase ? `${currentBase.trim()} ${transcript}` : transcript);
+                }
+              }
+            } catch (err) {
+              console.error("STT error in PromptInput:", err);
             }
-            
-            if (finalTranscript) {
-               baseline += (baseline ? " " : "") + finalTranscript;
-            }
-            
-            handleValueChange((baseline + (interimTranscript ? " " + interimTranscript : "")).trim());
           };
 
-          recognition.onerror = (e: any) => {
-            console.error("Speech recognition error", e);
-            stopRecording();
-          };
-
-          recognition.onend = () => {
-             stopRecording();
-          };
-
-          recognitionRef.current = recognition;
-          recognition.start();
-        } else {
-          console.warn("Speech Recognition API not supported in this browser.");
-          stopRecording();
+          recorder.start(250);
+        } catch (recErr) {
+          console.warn("Could not start MediaRecorder in PromptInput, falling back to simulated text:", recErr);
+          simulateText();
         }
       } else {
-        stopRecording();
+        // Fallback simulated visualizer
+        demoIntervalRef.current = window.setInterval(() => {
+          setAudioData(Array.from({ length: 5 }, () => Math.random() * 0.8 + 0.1));
+        }, 100);
+        simulateText();
       }
     }, [handleValueChange, stopRecording]);
 
@@ -986,6 +1022,7 @@ import {
   ArrowUp as ArrowUpLucide,
   ChevronDown as ChevronDownLucide,
   FileText as FileTextLucide,
+  LoaderCircle as LoaderCircleLucide,
   Mic as MicLucide,
   MicOff as MicOffLucide,
   Paperclip as PaperclipLucide,
@@ -995,9 +1032,11 @@ import {
 
 const CHAT_MODELS = [
   "Auto",
-  "Business",
-  "Personal",
-  "Software",
+  "GPT 5.5",
+  "Opus 4.8",
+  "Gemini 3.5 Flash",
+  "Composer 2.5",
+  "GLM 5.2",
 ] as const;
 
 const CHAT_EFFORTS = ["Quick", "Balanced", "Deep"] as const;
@@ -1030,75 +1069,181 @@ export function AiChatInput({
   const [model, setModel] = React.useState<(typeof CHAT_MODELS)[number]>("Auto");
   const [effortIndex, setEffortIndex] = React.useState(1);
   const [attachments, setAttachments] = React.useState<File[]>([]);
-  const [isListening, setIsListening] = React.useState(false);
-  const recognitionRef = React.useRef<any>(null);
+  type MicStatus = "idle" | "listening" | "transcribing" | "error";
+  const [micStatus, setMicStatus] = React.useState<MicStatus>("idle");
+  const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const audioChunksRef = React.useRef<Blob[]>([]);
+  const streamRef = React.useRef<MediaStream | null>(null);
+  const isVoiceRef = React.useRef<boolean>(false);
+  const voiceLangRef = React.useRef<string>("en");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaId = React.useId();
 
+  // Clean up all audio recorder streams on unmount to prevent leaks
   React.useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         try {
-          recognitionRef.current.abort();
+          mediaRecorderRef.current.stop();
         } catch {}
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
 
-  function handleMicClick() {
+  async function handleMicClick() {
     if (onMicClick) {
       onMicClick();
       return;
     }
 
-    if (isListening) {
-      if (recognitionRef.current) {
+    // If currently listening, clicking again immediately stops recording and sends to STT
+    if (micStatus === "listening") {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         try {
-          recognitionRef.current.stop();
+          mediaRecorderRef.current.stop();
         } catch {}
       }
-      setIsListening(false);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      setMicStatus("transcribing");
       return;
     }
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (micStatus === "transcribing") {
+      return;
+    }
 
-    if (!SpeechRecognition) {
-      console.warn("Speech recognition is not supported in this browser.");
+    setStatusMessage(null);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatusMessage("No microphone was detected.");
+      setMicStatus("error");
+      setTimeout(() => {
+        setMicStatus("idle");
+        setStatusMessage(null);
+      }, 4000);
       return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
 
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event: any) => {
-        let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+      let mimeType = "audio/webm;codecs=opus";
+      if (typeof MediaRecorder !== "undefined") {
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/webm";
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = "audio/ogg;codecs=opus";
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = "";
+            }
+          }
         }
-        setValue((prev) => (prev ? `${prev.trim()} ${transcript}` : transcript));
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
       };
 
-      recognition.onerror = () => {
-        setIsListening(false);
+      recorder.onstop = async () => {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        if (!chunks.length) {
+          setStatusMessage("No speech was detected.");
+          setMicStatus("idle");
+          setTimeout(() => setStatusMessage(null), 4000);
+          return;
+        }
+
+        const audioBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        if (audioBlob.size < 150) {
+          setStatusMessage("No speech was detected.");
+          setMicStatus("idle");
+          setTimeout(() => setStatusMessage(null), 4000);
+          return;
+        }
+
+        setMicStatus("transcribing");
+        try {
+          const formData = new FormData();
+          formData.append("audio", audioBlob, "speech.webm");
+
+          let res = await fetch("http://localhost:8000/api/voice/stt", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            res = await fetch("http://localhost:8000/api/stt", {
+              method: "POST",
+              body: formData,
+            });
+          }
+
+          if (!res.ok) {
+            throw new Error(`STT failed with HTTP status ${res.status}`);
+          }
+
+          const data = await res.json();
+          const transcript = (data.text || data.transcript || "").trim();
+          const lang = data.language || data.detected_language || "en";
+
+          if (transcript) {
+            isVoiceRef.current = true;
+            voiceLangRef.current = lang;
+            setValue((prev) => (prev ? `${prev.trim()} ${transcript}` : transcript));
+            setMicStatus("idle");
+            setStatusMessage(null);
+          } else {
+            setStatusMessage("No speech was detected.");
+            setMicStatus("idle");
+            setTimeout(() => setStatusMessage(null), 4000);
+          }
+        } catch (sttErr) {
+          console.error("STT transcription error:", sttErr);
+          setStatusMessage("I couldn't understand the audio. Please try again.");
+          setMicStatus("error");
+          setTimeout(() => {
+            setMicStatus("idle");
+            setStatusMessage(null);
+          }, 4000);
+        }
       };
 
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-
-      recognitionRef.current = recognition;
-      recognition.start();
-    } catch {
-      setIsListening(false);
+      recorder.start(250);
+      setMicStatus("listening");
+    } catch (err: any) {
+      console.error("Microphone access error:", err);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setStatusMessage("Microphone permission is required to use voice input.");
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setStatusMessage("No microphone was detected.");
+      } else {
+        setStatusMessage("Could not start voice recording.");
+      }
+      setMicStatus("error");
+      setTimeout(() => {
+        setMicStatus("idle");
+        setStatusMessage(null);
+      }, 4000);
     }
   }
 
@@ -1108,14 +1253,22 @@ export function AiChatInput({
     event.preventDefault();
     if (disabled || !canSubmit) return;
 
+    if (micStatus === "listening") {
+      handleMicClick();
+    }
+
     onSubmit(value.trim(), {
       model,
       effort: CHAT_EFFORTS[effortIndex],
       attachments,
+      isVoice: isVoiceRef.current,
+      language: voiceLangRef.current,
     });
     setValue("");
     setAttachments([]);
+    isVoiceRef.current = false;
   }
+
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (
@@ -1195,13 +1348,26 @@ export function AiChatInput({
           event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 192)}px`;
         }}
         onKeyDown={handleKeyDown}
-        placeholder={placeholder}
+        placeholder={
+          micStatus === "listening"
+            ? "Listening... Speak now (click mic again to stop)"
+            : micStatus === "transcribing"
+              ? "Transcribing speech..."
+              : placeholder
+        }
         aria-label="Message"
         className={cn(
           "block max-h-48 min-h-[62px] w-full resize-none bg-transparent px-4 pt-4 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/80 disabled:cursor-not-allowed",
           compact && "min-h-[44px] px-3.5 pt-3 text-[0.85rem]",
         )}
       />
+
+      {statusMessage && (
+        <div className="flex items-center gap-1.5 px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
+          <span className="inline-block size-1.5 animate-pulse rounded-full bg-amber-500" />
+          <span>{statusMessage}</span>
+        </div>
+      )}
 
       <div className="flex flex-nowrap items-center justify-between gap-2 px-3 pb-3 pt-2">
         <div className="flex min-w-0 flex-nowrap items-center gap-0.5 sm:gap-1">
@@ -1270,30 +1436,46 @@ export function AiChatInput({
             type="button"
             variant="ghost"
             size="icon"
-            disabled={disabled}
-            aria-label={isListening ? "Stop microphone" : "Voice assistant"}
-            title="Voice Assistant (or say 'Hey CHAI')"
+            disabled={disabled || micStatus === "transcribing"}
+            aria-label={
+              micStatus === "listening"
+                ? "Stop microphone"
+                : micStatus === "transcribing"
+                  ? "Transcribing audio..."
+                  : "Voice assistant"
+            }
+            title={
+              micStatus === "listening"
+                ? "Stop recording"
+                : micStatus === "transcribing"
+                  ? "Transcribing audio..."
+                  : "Voice Assistant (or say 'Hey CHAI')"
+            }
             onClick={handleMicClick}
             className={cn(
               "group relative shrink-0 rounded-xl transition-all duration-300",
               "text-muted-foreground hover:text-primary hover:bg-primary/10 hover:border-primary/25",
-              isListening && "chai-mic-active text-primary bg-primary/15 ring-2 ring-primary/40",
-              !isListening && "hover:scale-105 active:scale-95",
+              micStatus === "listening" && "chai-mic-active text-primary bg-primary/15 ring-2 ring-primary/40",
+              micStatus === "transcribing" && "text-primary bg-primary/10",
+              micStatus === "idle" && "hover:scale-105 active:scale-95",
             )}
           >
             <span
               aria-hidden="true"
               className={cn(
                 "pointer-events-none absolute -inset-0.5 rounded-xl border border-primary/30 opacity-0 transition-opacity duration-300 group-hover:opacity-100",
-                isListening && "opacity-100 animate-ping",
+                micStatus === "listening" && "opacity-100 animate-ping",
               )}
             />
-            {isListening ? (
+            {micStatus === "listening" ? (
               <MicOffLucide className="size-4 text-destructive" />
+            ) : micStatus === "transcribing" ? (
+              <LoaderCircleLucide className="size-4 animate-spin text-primary" />
             ) : (
               <MicLucide className="size-4 transition-transform duration-300 group-hover:scale-110" />
             )}
           </UiButton>
+
 
           <UiButton
             type="submit"

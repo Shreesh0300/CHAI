@@ -311,8 +311,19 @@ export function AssistantOrb({
       // -------------------------------------------------------------
       // 6. Fluid Undulating Audio Soundwaves & Spectrum Bars
       // -------------------------------------------------------------
-      const maxHeight = orbRadius * 0.72
-      const waveAmp = (currentLevel > 0.01 ? currentLevel * maxHeight * 0.95 : 10) * (currentState === "listening" ? 1.5 : 1.0)
+      // Dynamic wave amplitude based on state and speech
+      let waveAmp = 10
+      if (currentState === "speaking") {
+        const speechOsc = Math.sin(elapsed * 5.2) * 0.28 + Math.cos(elapsed * 8.6) * 0.22 + 0.65
+        const baseVoice = Math.max(maxHeight * 0.45, currentLevel * maxHeight * 1.35)
+        waveAmp = baseVoice * speechOsc
+      } else if (currentState === "listening") {
+        const listenOsc = Math.sin(elapsed * 6.2) * 0.25 + Math.cos(elapsed * 3.8) * 0.2 + 0.6
+        const voiceBoost = currentLevel > 0.005 ? currentLevel * maxHeight * 1.5 : 18
+        waveAmp = voiceBoost * listenOsc
+      } else if (currentState === "thinking") {
+        waveAmp = (Math.sin(elapsed * 9.5) * 0.5 + 0.5) * 22 + 8
+      }
 
       // Primary Cyan Fluid Soundwave
       ctx.save()
@@ -353,6 +364,7 @@ export function AssistantOrb({
       const gap = (totalWidth - numBars * barWidth) / (numBars - 1)
       const startX = cx - totalWidth / 2
       const mid = (numBars - 1) / 2
+      const maxHeight = orbRadius * 0.95
 
       for (let i = 0; i < numBars; i++) {
         // Gaussian bell-curve envelope: highest in center, tapering to sides
@@ -361,7 +373,29 @@ export function AssistantOrb({
 
         let targetH = 6
 
-        if (analyser) {
+        if (currentState === "speaking") {
+          // Highly dynamic speech wave for speaking
+          const voiceWave1 = Math.sin(elapsed * 5.2 + i * 0.35)
+          const voiceWave2 = Math.cos(elapsed * 8.4 + i * 0.55)
+          const voiceCombined = (voiceWave1 + voiceWave2 + 2) / 4
+          const amp = Math.max(maxHeight * 0.65, currentLevel * maxHeight * 1.4)
+          targetH = Math.max(8, (voiceCombined * amp + 8) * envelope)
+        } else if (currentState === "listening") {
+          // Dynamic undulating wavy motion based on the pull request
+          // Traveling wave rolling across the bars from left to right:
+          const flutter = Math.sin(elapsed * 6.2 + i * 0.45) * Math.cos(elapsed * 3.2 + i * 0.22)
+          const waveCrest = Math.abs(flutter)
+          let micEnergy = currentLevel
+          if (analyser && freqData) {
+            const bin = Math.min(Math.floor((i / numBars) * freqData.length), freqData.length - 1)
+            micEnergy = Math.max(micEnergy, freqData[bin] / 255)
+          }
+          // When user talks, amplify the undulating wavy motion proportionally to voice energy
+          const dynamicWave = micEnergy > 0.01
+            ? (micEnergy * maxHeight * 1.35 + 12) * (0.42 + waveCrest * 0.8)
+            : (waveCrest * 32 + 8)
+          targetH = Math.max(6, dynamicWave * envelope)
+        } else if (analyser) {
           // Map to real analyser data
           const bin = Math.min(Math.floor((i / numBars) * freqData.length), freqData.length - 1)
           const val = freqData[bin] / 255
@@ -370,22 +404,10 @@ export function AssistantOrb({
           // Slow breathing sine wave
           const wave = Math.sin(elapsed * 1.6 + i * 0.28) * 0.5 + 0.5
           targetH = (wave * 20 + 6) * envelope
-        } else if (currentState === "listening") {
-          // React to microphone level + simulated audio dynamics
-          const flutter = Math.sin(elapsed * 6 + i * 0.45) * Math.cos(elapsed * 3 + i * 0.2)
-          const audioBoost = currentLevel > 0 ? currentLevel * maxHeight * 1.2 : (Math.abs(flutter) * 35 + 8)
-          targetH = Math.max(6, audioBoost * envelope)
         } else if (currentState === "thinking") {
           // Rapid high-frequency tight ripple
           const ripple = Math.sin(elapsed * 9 + i * 0.65) * 0.5 + 0.5
           targetH = (ripple * 16 + 5) * envelope * 0.75
-        } else if (currentState === "speaking") {
-          // Highly dynamic speech wave
-          const voiceWave1 = Math.sin(elapsed * 5.2 + i * 0.35)
-          const voiceWave2 = Math.cos(elapsed * 8.4 + i * 0.55)
-          const voiceCombined = (voiceWave1 + voiceWave2 + 2) / 4
-          const amp = currentLevel > 0 ? currentLevel * maxHeight * 1.3 : maxHeight * 0.8
-          targetH = Math.max(8, (voiceCombined * amp + 8) * envelope)
         }
 
         // Smooth interpolation for fluid 60fps dynamics

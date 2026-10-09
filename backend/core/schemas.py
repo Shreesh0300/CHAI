@@ -2,7 +2,7 @@
 Schemas for CHAI core coordinator, routing, execution state, and API models.
 """
 from typing import List, Optional, Any, Dict, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from backend.core.state import (
     CHAIState,
@@ -49,8 +49,25 @@ class SolveRequest(BaseModel):
     context: Optional[str] = Field(None, description="Optional environmental or domain context.")
     selected_agents: Optional[List[str]] = Field(default=None, description="Optional override list of agents to execute.")
     mode: Optional[str] = Field(default="ask", description="UI interaction mode: 'ask', 'research', or 'agent'.")
-    conversation_id: Optional[str] = Field(None, description="Optional conversation/thread identifier.")
-    session_id: Optional[str] = Field(None, description="Optional session identifier for isolation.")
+    language: Optional[str] = Field(
+        default=None,
+        description="Optional ISO language code ('en', 'hi', 'kn'). Auto-detected if omitted.",
+    )
+    model: Optional[str] = Field(
+        default="Auto",
+        description="Selected model domain/mode: 'Auto', 'Business', 'Personal', 'Software'.",
+    )
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        from backend.core.language import canonicalize_language
+        canon = canonicalize_language(v)
+        if canon is None:
+            raise ValueError(f"Unsupported language '{v}'. Supported languages are: 'en', 'hi', 'kn', 'sa'.")
+        return canon
 
 
 class CHAIExecutionResult(BaseModel):
@@ -110,8 +127,8 @@ class FinalResponse(BaseModel):
     execution_trace: List[Dict[str, Any]] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     limitations: Optional[List[str]] = None
+    language: str = Field(default="en", description="Resolved ISO language code ('en', 'hi', 'kn').")
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    conversation_id: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:
         if self.status is None:

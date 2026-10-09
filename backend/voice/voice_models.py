@@ -16,6 +16,8 @@ class STTResponse(BaseModel):
     text: str = ""
     language: str = "en"
     success: bool = False
+    wake_word_detected: bool = False
+    wake_phrase: Optional[str] = None
     error: Optional[str] = None
 
 

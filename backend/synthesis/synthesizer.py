@@ -24,6 +24,7 @@ from backend.agents.guardian.schemas import GuardianResult, GuardianOutput
 from backend.agents.security.models import SecurityResult
 from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput
 from backend.core.contracts import SynthesisResult, SynthesizerInputContract
+from backend.core.language import LANGUAGE_NAMES, DEFAULT_LANGUAGE
 from backend.shared.llm_client import llm_client, get_gemini_api_key
 from backend.shared.logger import get_logger
 
@@ -75,10 +76,25 @@ class Synthesizer:
         sources: Optional[List[str]] = None,
         conflicts: Optional[List[str]] = None,
         all_agent_results: Optional[Dict[str, Any]] = None,
-    ) -> SynthesisResult:
+        agent_outputs: Optional[Dict[str, Any]] = None,
+        detected_conflicts: Optional[List[str]] = None,
+        language: str = DEFAULT_LANGUAGE,
+        limitations: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Union[SynthesisResult, str]:
         """
-        Reconciles findings from all specialized agents into a unified SynthesisResult.
+        Reconciles findings from all specialized agents into a unified SynthesisResult
+        or localized response text.
         """
+        if agent_outputs is not None:
+            return await self._synthesize_multilingual(
+                problem=problem,
+                agent_outputs=agent_outputs,
+                detected_conflicts=detected_conflicts or conflicts or [],
+                language=language,
+                limitations=limitations or [],
+            )
+
         logger.info(f"Synthesizer: starting cross-agent synthesis for '{problem}'")
 
         # 1. Normalize representations to dict / model helper
@@ -236,6 +252,93 @@ class Synthesizer:
             sources=all_sources,
             final_text=final_text,
         )
+
+    async def _synthesize_multilingual(
+        self,
+        problem: str,
+        agent_outputs: Dict[str, Any],
+        detected_conflicts: List[str],
+        language: str,
+        limitations: List[str],
+    ) -> str:
+        lang_code = (language or DEFAULT_LANGUAGE).lower()
+        if lang_code not in LANGUAGE_NAMES:
+            lang_code = DEFAULT_LANGUAGE
+
+        return self._synthesize_fallback(
+            agent_outputs=agent_outputs,
+            detected_conflicts=detected_conflicts,
+            language=lang_code,
+            limitations=limitations,
+        )
+
+    def _synthesize_fallback(
+        self,
+        agent_outputs: Dict[str, Any],
+        detected_conflicts: List[str],
+        language: str,
+        limitations: List[str],
+    ) -> str:
+        strat_text = (
+            agent_outputs.get("strategist", {}).get("strategy")
+            or agent_outputs.get("strategist", {}).get("strategy_overview", "")
+        )
+        arch_text = agent_outputs.get("engineer", {}).get("technical_architecture", "")
+        sec_text = agent_outputs.get("security", {}).get("security_summary", "")
+
+        if language == "kn":
+            res = "ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆಯ ಆಧಾರದ ಮೇಲೆ:\n"
+            if strat_text:
+                res += f"\nತಂತ್ರಗಾರಿಕೆ (Strategy):\n{strat_text}\n"
+            if arch_text:
+                res += f"\nತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture):\n{arch_text}\n"
+            if sec_text:
+                res += f"\nಭದ್ರತಾ ಮೌಲ್ಯಮಾಪನ (Security Assessment):\n{sec_text}\n"
+            if detected_conflicts:
+                res += f"\nಗುರುತಿಸಲಾದ ಅಸಂಗತತೆಗಳು ಮತ್ತು ಹೊಂದಾಣಿಕೆಗಳು (Tradeoffs):\n" + "\n".join(
+                    f"- {c}" for c in detected_conflicts
+                ) + "\n"
+            if limitations:
+                res += f"\nಮಿತಿಗಳು (Limitations):\n" + "\n".join(
+                    f"- {l}" for l in limitations
+                ) + "\n"
+            return res
+
+        elif language == "hi":
+            res = "हमारे विशेषज्ञ एजेंटों के व्यापक विश्लेषण के आधार पर:\n"
+            if strat_text:
+                res += f"\nरणनीति (Strategy):\n{strat_text}\n"
+            if arch_text:
+                res += f"\nवास्तुशिल्प (Architecture):\n{arch_text}\n"
+            if sec_text:
+                res += f"\nसुरक्षा मूल्यांकन (Security Assessment):\n{sec_text}\n"
+            if detected_conflicts:
+                res += f"\nपहचानी गई विसंगतियां और व्यापार-बंद (Tradeoffs):\n" + "\n".join(
+                    f"- {c}" for c in detected_conflicts
+                ) + "\n"
+            if limitations:
+                res += f"\nसीमाएं (Limitations):\n" + "\n".join(
+                    f"- {l}" for l in limitations
+                ) + "\n"
+            return res
+
+        else:
+            res = "Based on the comprehensive analysis of our specialized agents:\n"
+            if strat_text:
+                res += f"\nStrategy:\n{strat_text}\n"
+            if arch_text:
+                res += f"\nArchitecture:\n{arch_text}\n"
+            if sec_text:
+                res += f"\nSecurity Assessment:\n{sec_text}\n"
+            if detected_conflicts:
+                res += f"\nIdentified Inconsistencies / Tradeoffs:\n" + "\n".join(
+                    f"- {c}" for c in detected_conflicts
+                ) + "\n"
+            if limitations:
+                res += f"\nLimitations:\n" + "\n".join(
+                    f"- {l}" for l in limitations
+                ) + "\n"
+            return res
 
     def _to_dict(self, obj: Any) -> Dict[str, Any]:
         """Safely normalizes Pydantic models or dicts to a dictionary."""

@@ -16,6 +16,8 @@ from backend.shared.llm_client import (
     get_gemini_api_key,
     get_default_gemini_model,
     classify_gemini_error,
+    is_quota_exhausted,
+    mark_quota_exhausted,
 )
 from backend.shared.logger import get_logger
 
@@ -46,10 +48,10 @@ class LangChainChatService:
     def _get_chat_model(self) -> Any:
         """Initializes or retrieves the configured ChatGoogleGenerativeAI instance."""
         api_key = get_gemini_api_key()
-        is_mock = os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes") or not api_key
+        is_mock = os.getenv("CHAI_MOCK_MODE", "").lower() in ("true", "1", "yes") or not api_key or is_quota_exhausted()
 
         if is_mock:
-            # Safe mock runnable for local testing without active API key
+            # Safe mock runnable for local testing without active API key or on quota exhaustion
             from langchain_core.runnables import RunnableLambda
             def mock_reply(messages: Any) -> str:
                 return "Hello! I am CHAI in conversational mode. How can I help you today?"
@@ -61,7 +63,8 @@ class LangChainChatService:
             model=effective_model,
             temperature=0.3,
             api_key=api_key,
-            timeout=30.0,
+            max_retries=1,
+            timeout=10.0,
         )
 
     def build_chain(self) -> Any:
@@ -133,32 +136,38 @@ class LangChainChatService:
             reply_text = str(response).strip()
         except Exception as exc:
             err_cat, err_msg = classify_gemini_error(exc)
-            effective_model = self.model_name or get_default_gemini_model()
-            api_key = get_gemini_api_key()
-            if (err_cat in ("[QUOTA_ERROR]", "[NOT_FOUND_ERROR]", "[API_ERROR]") or "404" in str(exc) or "not available" in str(exc).lower()) and effective_model != "gemini-flash-lite-latest" and api_key:
-                logger.warning(f"[CHAT SERVICE] Primary model '{effective_model}' failed ({err_cat}). Falling back to gemini-flash-lite-latest...")
-                try:
-                    from langchain_google_genai import ChatGoogleGenerativeAI
-                    fallback_model = ChatGoogleGenerativeAI(
-                        model="gemini-flash-lite-latest",
-                        temperature=0.3,
-                        api_key=api_key,
-                        timeout=30.0,
-                    )
-                    fallback_chain = self.prompt_template | fallback_model | StrOutputParser()
-                    response = await fallback_chain.ainvoke({
-                        "user_context_block": user_context_block,
-                        "history": history_messages,
-                        "input": message,
-                    })
-                    reply_text = str(response).strip()
-                except Exception as fb_exc:
-                    fb_cat, fb_msg = classify_gemini_error(fb_exc)
-                    logger.error(f"[CHAT SERVICE] Fallback execution error: {fb_cat} {fb_msg}")
-                    reply_text = f"I encountered a temporary issue connecting to my reasoning engine: {fb_msg}"
-            else:
-                logger.error(f"[CHAT SERVICE] LangChain execution error: {err_cat} {err_msg}")
+            if err_cat == "[QUOTA_ERROR]":
+                mark_quota_exhausted(60.0)
+                logger.warning(f"[CHAT SERVICE] Gemini quota exhausted: {err_msg}")
                 reply_text = f"I encountered a temporary issue connecting to my reasoning engine: {err_msg}"
+            else:
+                effective_model = self.model_name or get_default_gemini_model()
+                api_key = get_gemini_api_key()
+                if (err_cat in ("[NOT_FOUND_ERROR]", "[API_ERROR]") or "404" in str(exc) or "not available" in str(exc).lower()) and effective_model != "gemini-flash-lite-latest" and api_key and not is_quota_exhausted():
+                    logger.warning(f"[CHAT SERVICE] Primary model '{effective_model}' failed ({err_cat}). Falling back to gemini-flash-lite-latest...")
+                    try:
+                        from langchain_google_genai import ChatGoogleGenerativeAI
+                        fallback_model = ChatGoogleGenerativeAI(
+                            model="gemini-flash-lite-latest",
+                            temperature=0.3,
+                            api_key=api_key,
+                            max_retries=1,
+                            timeout=10.0,
+                        )
+                        fallback_chain = self.prompt_template | fallback_model | StrOutputParser()
+                        response = await fallback_chain.ainvoke({
+                            "user_context_block": user_context_block,
+                            "history": history_messages,
+                            "input": message,
+                        })
+                        reply_text = str(response).strip()
+                    except Exception as fb_exc:
+                        fb_cat, fb_msg = classify_gemini_error(fb_exc)
+                        logger.error(f"[CHAT SERVICE] Fallback execution error: {fb_cat} {fb_msg}")
+                        reply_text = f"I encountered a temporary issue connecting to my reasoning engine: {fb_msg}"
+                else:
+                    logger.error(f"[CHAT SERVICE] LangChain execution error: {err_cat} {err_msg}")
+                    reply_text = f"I encountered a temporary issue connecting to my reasoning engine: {err_msg}"
 
         memories_used = [m.memory for m in context_payload.relevant_memories]
         return reply_text, memories_used

@@ -173,25 +173,12 @@ class StrategistAgent:
             logger.error(f"Gemini API or invocation failure during strategy formulation: {e}")
             return StrategyResult(
                 agent="strategist",
-                status="completed",
-                strategy=f"Deploy targeted solution architecture for '{problem[:80]}' with phased rollout, automated verification, and interactive feedback loops.",
-                priorities=[
-                    "Immediate user requirement parsing and intent recognition",
-                    "Decoupled multi-agent synthesis and resilient verification",
-                    "Interactive real-time communication via TTS and conversational UI",
-                ],
-                roadmap=[
-                    "Phase 1: Parse requirements and validate inputs",
-                    "Phase 2: Orchestrate specialized agent nodes and synthesize results",
-                    "Phase 3: Verify security, privacy, and deliver interactive response",
-                ],
-                tradeoffs=[
-                    "Prioritized low latency and real-time responsiveness over exhaustive asynchronous search",
-                ],
-                success_metrics=[
-                    "Response synthesized in < 1 second",
-                    "Consistent end-to-end user satisfaction",
-                ],
+                status="failed",
+                strategy="",
+                priorities=[],
+                roadmap=[],
+                tradeoffs=[],
+                success_metrics=[],
             )
 
     def _parse_llm_response(self, result: Any) -> StrategyResult:

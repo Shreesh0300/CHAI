@@ -158,20 +158,13 @@ class ResearcherAgent:
             logger.error(f"Gemini API or invocation failure during research: {e}")
             return ResearchResult(
                 agent="researcher",
-                status="completed",
-                key_findings=[
-                    f"Identified core requirements for: '{problem[:80]}'",
-                    "Evaluated operational constraints and latency expectations",
-                    "Mapped domain dependencies and multi-agent coordination requirements",
-                ],
-                user_needs=[
-                    "High-speed, deterministic execution with natural conversational responses",
-                    "Continuous interactive voice feedback with visual spectrum state",
-                ],
-                constraints=["Low-latency response budget", "Robust error recovery"],
-                assumptions=["Standard multi-agent orchestration parameters apply"],
+                status="failed",
+                key_findings=[],
+                user_needs=[],
+                constraints=[],
+                assumptions=[],
                 open_questions=[],
-                sources=parsed_sources,
+                sources=[],
             )
 
     def _parse_llm_response(self, result: Any, initial_sources: List[Source]) -> ResearchResult:

@@ -139,9 +139,9 @@ export function createWorkArtifact(prompt: string): WorkArtifact {
       { source: "Email", description: "Returning audience", share: 14, change: "−3%" },
     ],
     highlights: [
-      "Organic search represents the primary growth signal across monitored channels.",
+      "Organic search is the strongest illustrative growth signal.",
       "Partner referrals contribute a meaningful share of qualified activity.",
-      "Multi-agent synthesis synchronized across active models and context.",
+      "The example data is labeled throughout and is not connected to a live source.",
     ],
     nextSteps: [
       "Confirm the source data and reporting period.",
@@ -157,6 +157,12 @@ export function createAssistantReply(
   isFollowUp: boolean,
 ) {
   const normalizedPrompt = prompt.trim().toLowerCase()
+
+  if (layout === "workspace") {
+    return isFollowUp
+      ? "I've added that follow-up to the conversation. Keep refining the brief here, or ask another question from the work panel. The figures in the workspace are illustrative sample data."
+      : "I've organized this into a focused work area with an overview, trend view, data table, and next steps. The figures are illustrative sample data, not live results."
+  }
 
   if (/^(hi|hello|hey|good morning|good afternoon)[.! ]*$/.test(normalizedPrompt)) {
     return "Hi. What would you like to work through today?"

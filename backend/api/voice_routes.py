@@ -55,7 +55,8 @@ async def speech_to_text_alias(
             "transcript": result.text,
             "detected_language": result.language,
             "confidence": 0.98 if result.success else 0.0,
-            "wake_word_detected": False,
+            "wake_word_detected": getattr(result, "wake_word_detected", False),
+            "wake_phrase": getattr(result, "wake_phrase", None),
             "success": result.success,
             "error": result.error,
         }
@@ -65,6 +66,7 @@ async def speech_to_text_alias(
             "detected_language": "en",
             "confidence": 0.0,
             "wake_word_detected": False,
+            "wake_phrase": None,
             "success": False,
             "error": str(e),
         }
@@ -114,3 +116,121 @@ async def text_to_speech_stream(request: TTSRequest):
         return Response(content=audio_bytes, media_type=content_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+from fastapi import Query
+from pydantic import BaseModel, Field
+from backend.voice.wakeup_daemon import (
+    get_voice_wakeup_daemon,
+    play_audio_to_speakers,
+    extract_wake_word_and_query,
+)
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to speak aloud through system speakers")
+    language: Optional[str] = Field(default="en", description="Language code ('en', 'hi', 'kn', 'sa')")
+
+
+class SimulateWakeRequest(BaseModel):
+    text: Optional[str] = Field(
+        default="Welcome back chai",
+        description="Spoken wake phrase to simulate, e.g. 'Hey CHAI what is AI?'",
+    )
+    language: Optional[str] = Field(default="en", description="Language code ('en', 'hi', 'kn', 'sa')")
+
+
+@router.post("/voice/synthesize")
+@router.get("/voice/synthesize")
+async def synthesize_audio_stream(
+    text: Optional[str] = Query(None),
+    language: Optional[str] = Query("en"),
+    request: Optional[TTSRequest] = None,
+):
+    """
+    Synthesize speech and stream raw audio (WAV / MP3) bytes directly to browser or media player.
+    """
+    input_text = ""
+    lang = "en"
+    if request and request.text:
+        input_text = request.text
+        lang = request.language or "en"
+    elif text:
+        input_text = text
+        lang = language or "en"
+
+    if not input_text.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'text' or JSON body with 'text' required.")
+
+    try:
+        audio_bytes = await tts_service.synthesize(input_text, language=lang)
+        media_type = "audio/wav"
+        if audio_bytes.startswith(b"ID3") or (len(audio_bytes) >= 2 and audio_bytes[:2] == b"\xff\xfb"):
+            media_type = "audio/mpeg"
+
+        return Response(
+            content=audio_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": "inline; filename=speech.wav",
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/voice/speak")
+async def speak_through_speakers(req: SpeakRequest):
+    """
+    Synthesizes speech and plays it aloud through the server's system speakers.
+    """
+    try:
+        audio_bytes = await tts_service.synthesize(req.text, language=req.language or "en")
+        played = play_audio_to_speakers(audio_bytes, "manual_speak.wav")
+        return {
+            "success": True,
+            "text": req.text,
+            "language": req.language,
+            "played_to_speakers": played,
+            "audio_bytes": len(audio_bytes),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Voice Wake-Up Daemon Endpoints (Alexa & Apple Siri Style)
+# ---------------------------------------------------------------------------
+
+@router.get("/voice/wakeup/status")
+async def get_wakeup_status():
+    """Retrieve running status and metrics for the background voice wake-up daemon."""
+    daemon = get_voice_wakeup_daemon()
+    return daemon.get_status()
+
+
+@router.post("/voice/wakeup/start")
+async def start_wakeup_daemon():
+    """Start or resume the background voice wake-up listener."""
+    daemon = get_voice_wakeup_daemon()
+    daemon.start()
+    return {"message": "Voice wake-up daemon started.", "status": daemon.get_status()}
+
+
+@router.post("/voice/wakeup/stop")
+async def stop_wakeup_daemon():
+    """Pause or stop the background voice wake-up listener."""
+    daemon = get_voice_wakeup_daemon()
+    daemon.stop()
+    return {"message": "Voice wake-up daemon stop signaled.", "status": daemon.get_status()}
+
+
+@router.post("/voice/wakeup/simulate")
+async def simulate_voice_wakeup(req: SimulateWakeRequest):
+    """
+    Simulate a live wake-up event.
+    """
+    daemon = get_voice_wakeup_daemon()
+    res = daemon.simulate_wake(text=req.text or "Welcome back chai", language=req.language or "en")
+    return res

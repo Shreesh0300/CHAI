@@ -18,7 +18,7 @@ from typing import Tuple, Optional
 
 import logging
 from backend.voice.voice_models import STTResponse
-from backend.voice.voice_config import get_voice_settings
+from backend.voice.voice_config import get_voice_settings, VoiceSettings
 from backend.core.language import canonicalize_language, detect_language, DEFAULT_LANGUAGE
 from backend.shared.logger import get_logger
 
@@ -46,6 +46,41 @@ STT_PROMPT = (
     "LANGUAGE: en\n"
     "TEXT: "
 )
+
+
+WAKE_PHRASES = (
+    "hey chai",
+    "hey chia",
+    "hey try",
+    "hey shy",
+    "a chai",
+    "hi chai",
+    "hello chai",
+    "ok chai",
+    "okay chai",
+    "wake up chai",
+    "chai wake up",
+    "yo chai",
+    "chai",
+    "नमस्ते चाई",
+    "हे चाय",
+    "सुनो चाई",
+    "ನಮಸ್ಕಾರ ಚಾಯ್",
+    "ಹೇ ಚಾಯ್",
+    "ಕೇಳು ಚಾಯ್",
+)
+
+
+def detect_wake_word_in_text(text: str) -> Tuple[bool, Optional[str]]:
+    """Detect if the transcription contains an invocation / wake phrase like 'Hey CHAI'."""
+    if not text:
+        return False, None
+    lower = text.lower().strip()
+    for phrase in WAKE_PHRASES:
+        pattern = r"\b" + re.escape(phrase) + r"\b"
+        if re.search(pattern, lower, re.IGNORECASE):
+            return True, phrase
+    return False, None
 
 
 def parse_stt_result(raw_text: str, metadata_lang: Optional[str] = None) -> Tuple[str, str]:
@@ -166,8 +201,8 @@ def _format_audio_payload(audio_data: bytes, sample_rate: int = 16000, channels:
 class STTService:
     """Abstraction over a cloud Speech-to-Text provider."""
 
-    def __init__(self):
-        self.settings = get_voice_settings()
+    def __init__(self, settings: Optional[VoiceSettings] = None):
+        self.settings = settings or get_voice_settings()
 
     async def transcribe(self, audio_data: bytes) -> STTResponse:
         """
@@ -249,38 +284,39 @@ class STTService:
             prompt = STT_PROMPT
             audio_part = types.Part.from_bytes(data=formatted_bytes, mime_type=mime_type)
 
-            model_name = configured_model
-            try:
-                response = await client.aio.models.generate_content(
-                    model=model_name,
-                    contents=[prompt, audio_part],
-                )
-            except Exception as model_err:
-                err_str = str(model_err)
-                if (
-                    "429" in err_str
-                    or "RESOURCE_EXHAUSTED" in err_str
-                    or "404" in err_str
-                    or "NOT_FOUND" in err_str
-                ) and model_name != "gemini-3.8-flash":
-                    logger.warning(
-                        f"Model '{model_name}' hit rate limit or error ({err_str[:80]}). "
-                        f"Falling back to 'gemini-3.8-flash'."
+            candidate_models = [configured_model]
+            for m in ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]:
+                if m not in candidate_models:
+                    candidate_models.append(m)
+
+            response = None
+            last_err = None
+            for model_name in candidate_models:
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=model_name,
+                        contents=[prompt, audio_part],
                     )
-                    model_name = "gemini-3.8-flash"
-                    try:
-                        response = await client.aio.models.generate_content(
-                            model=model_name,
-                            contents=[prompt, audio_part],
+                    if response:
+                        break
+                except Exception as model_err:
+                    last_err = model_err
+                    err_str = str(model_err)
+                    if (
+                        "429" in err_str
+                        or "RESOURCE_EXHAUSTED" in err_str
+                        or "404" in err_str
+                        or "NOT_FOUND" in err_str
+                    ):
+                        logger.warning(
+                            f"Model '{model_name}' hit rate limit or error ({err_str[:80]}). "
+                            "Trying next available candidate model."
                         )
-                    except Exception:
-                        model_name = "gemini-flash-latest"
-                        response = await client.aio.models.generate_content(
-                            model=model_name,
-                            contents=[prompt, audio_part],
-                        )
-                else:
+                        continue
                     raise model_err
+
+            if response is None:
+                raise last_err or RuntimeError("No STT model candidate succeeded")
 
             transcribed_texts = []
             detected_language_meta = None
@@ -314,11 +350,14 @@ class STTService:
 
             # Parse language header and verbatim text
             text, final_language = parse_stt_result(raw_text, metadata_lang=detected_language_meta)
+            wake_detected, wake_phrase = detect_wake_word_in_text(text)
 
             return STTResponse(
                 text=text,
                 language=final_language,
                 success=True,
+                wake_word_detected=wake_detected,
+                wake_phrase=wake_phrase,
                 error=None,
             )
         except Exception as e:

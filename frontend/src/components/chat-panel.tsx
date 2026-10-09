@@ -98,8 +98,8 @@ export function ChatPanel({
             onMicClick={onMicClick}
           />
         </div>
-        <p className="mx-auto mt-1.5 max-w-[560px] px-1 text-center text-[10px] leading-4 text-muted-foreground">
-          CHAI can make mistakes. Verify important info.
+        <p className="mx-auto mt-1.5 max-w-[560px] px-1 text-[10px] leading-4 text-muted-foreground">
+          Enter sends · Shift+Enter creates a new line
         </p>
       </footer>
     </aside>

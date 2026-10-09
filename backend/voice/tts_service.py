@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Union, Any
 
-from backend.voice.voice_config import get_voice_settings
+from backend.voice.voice_config import get_voice_settings, VoiceSettings
 from backend.core.language import canonicalize_language, DEFAULT_LANGUAGE
 from backend.shared.logger import get_logger
 
@@ -33,8 +33,8 @@ LANGUAGE_INSTRUCTIONS = {
 class TTSService:
     """Abstraction over cloud Text-to-Speech using Google Gemini API."""
 
-    def __init__(self):
-        self.settings = get_voice_settings()
+    def __init__(self, settings: Optional[VoiceSettings] = None):
+        self.settings = settings or get_voice_settings()
         self.model_name = (
             os.getenv("GEMINI_TTS_MODEL")
             or getattr(self.settings, "gemini_tts_model", "")

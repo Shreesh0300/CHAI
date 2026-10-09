@@ -306,15 +306,15 @@ class EvaluatorAgent:
         result = EvaluatorResult(
             agent="evaluator",
             status=AgentStatus.COMPLETED,
-            overall_assessment=f"Cross-agent evaluation and consensus review of: {problem}{active_str}",
+            overall_assessment=f"[Mock] Cross-agent evaluation of: {problem}{active_str}",
             requirement_coverage=[],
             conflicts=[],
             inconsistencies=[],
             unsupported_claims=[],
             quality_issues=[],
-            strengths=["Individual agent perspectives provide grounded solution approaches."],
-            recommendations=["Proceed with phased implementation while validating automated tests."],
-            assumptions=["Automated evaluation aligned with domain objectives."],
-            missing_information=[],
+            strengths=["[Mock] Individual agent perspectives provide preliminary viewpoints."],
+            recommendations=["[Mock] Comprehensive cross-agent evaluation requires GEMINI_API_KEY."],
+            assumptions=["[Mock] No live LLM available; returning placeholder evaluation data."],
+            missing_information=["[Mock] Full agent outputs and GEMINI_API_KEY required for detailed conflict detection."],
         )
         return EvaluatorOutput.from_evaluator_result(result)

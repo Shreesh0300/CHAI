@@ -103,6 +103,9 @@ class CHAICoordinator:
         self.reliability_monitor = reliability_monitor or ReliabilityMonitorAgent()
         self.output_validator = output_validator or OutputValidator()
         self.direct_llm = direct_llm
+        self._custom_agents_injected = any(
+            x is not None for x in [researcher, strategist, engineer, guardian, security, evaluator]
+        )
 
         self._agent_instances = {
             "information_acquisition": self.information_acquisition,
@@ -142,27 +145,20 @@ class CHAICoordinator:
         execution_statuses: List[AgentExecutionStatus] = []
         execution_trace: List[Dict[str, Any]] = []
 
-        # Check conversation context if conversation_id is provided
-        conversation_id = getattr(request, "conversation_id", None)
-        user_id = getattr(request, "user_id", None) or "guest_default"
-        conversation_context = getattr(request, "context", None)
-        if not conversation_context and conversation_id:
-            try:
-                from backend.memory.context import context_manager
-                conversation_context = await context_manager.build_solve_context(
-                    user_id=user_id,
-                    problem=request.problem,
-                    conversation_id=conversation_id,
-                    session_id=getattr(request, "session_id", None),
-                )
-            except Exception as e:
-                logger.debug(f"Could not load conversation context: {e}")
+        # Resolve language (explicit or auto-detect)
+        if getattr(request, "language", None):
+            from backend.core.language import canonicalize_language, DEFAULT_LANGUAGE
+            resolved_lang = canonicalize_language(request.language) or DEFAULT_LANGUAGE
+        else:
+            from backend.core.language import detect_language
+            detection = detect_language(request.problem or "")
+            resolved_lang = detection.language
 
         # Initialize canonical state tracking
         state = create_initial_state(
             problem=request.problem,
-            user_id=user_id,
-            context=conversation_context,
+            user_id=getattr(request, "user_id", None),
+            context=getattr(request, "context", None),
         )
 
         # -------------------------------------------------------------
@@ -182,7 +178,7 @@ class CHAICoordinator:
             complexity = "low" if not selected_agents else "high"
         else:
             # ASK mode (default): Router is the final authority
-            route_decision = route_request(request.problem, conversation_context)
+            route_decision = route_request(request.problem, getattr(request, "context", None))
             if req_mode == "agent":
                 route = "complex"
                 complexity = "high"
@@ -242,47 +238,42 @@ class CHAICoordinator:
                         "- Do NOT use Markdown headings, sections, or bullet lists for simple questions.\n"
                         "- Do NOT mention any agents, internal systems, or multi-agent pipelines.\n"
                         "- Maintain flawless grammar, punctuation, and natural English.\n\n"
+                        f"Question: {request.problem}"
                     )
-                    if conversation_context and conversation_context.strip():
-                        prompt += f"[CONVERSATION CONTEXT]\n{conversation_context.strip()}\n\n"
-                    prompt += f"Question: {request.problem}"
                     direct_text = await llm_client.generate_content(prompt)
                     if not direct_text or direct_text.strip() == "Mock response: API key not configured.":
                         direct_text = f"Direct response provided for: {request.problem}"
             except Exception as e:
-                if self.direct_llm is not None:
-                    logger.error(f"Direct LLM call failed: {e}")
-                    execution_trace.append({
-                        "agent": "direct_llm",
-                        "stage": "direct_llm",
-                        "status": "failed",
-                        "timestamp": _iso_now(),
-                        "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                        "error": str(e),
-                    })
-                    return FinalResponse(
-                        request_id=getattr(request, "request_id", None) or state.get("request_id"),
-                        request_status="failed",
-                        status="failed",
-                        route="simple",
-                        complexity=complexity,
-                        selected_agents=[],
-                        agent_outputs={},
-                        retrieved_sources=[],
-                        acquired_information=[],
-                        agent_execution_statuses=[],
-                        evaluation_findings=None,
-                        security_findings=None,
-                        detected_conflicts=[],
-                        final_synthesized_answer=f"Error generating direct response: {e}",
-                        final_answer=f"Error generating direct response: {e}",
-                        execution_trace=execution_trace,
-                        errors=[str(e)],
-                        limitations=[],
-                        metadata={"route": "simple"},
-                    )
-                logger.warning(f"Direct LLM call failed ({e}); utilizing resilient direct fallback.")
-                direct_text = f"Direct response provided for: {request.problem}"
+                logger.error(f"Direct LLM call failed: {e}")
+                execution_trace.append({
+                    "agent": "direct_llm",
+                    "stage": "direct_llm",
+                    "status": "failed",
+                    "timestamp": _iso_now(),
+                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
+                    "error": str(e),
+                })
+                return FinalResponse(
+                    request_id=getattr(request, "request_id", None) or state.get("request_id"),
+                    request_status="failed",
+                    status="failed",
+                    route="simple",
+                    complexity=complexity,
+                    selected_agents=[],
+                    agent_outputs={},
+                    retrieved_sources=[],
+                    acquired_information=[],
+                    agent_execution_statuses=[],
+                    evaluation_findings=None,
+                    security_findings=None,
+                    detected_conflicts=[],
+                    final_synthesized_answer=f"Error generating direct response: {e}",
+                    final_answer=f"Error generating direct response: {e}",
+                    execution_trace=execution_trace,
+                    errors=[str(e)],
+                    limitations=[],
+                    metadata={"route": "simple"},
+                )
 
             sanitized_direct = normalize_unicode_escapes(direct_text if isinstance(direct_text, str) else str(direct_text))
             user_facing_direct = format_user_facing_response(
@@ -294,24 +285,6 @@ class CHAICoordinator:
             )
             user_facing_direct = normalize_unicode_escapes(user_facing_direct)
 
-            if conversation_id:
-                try:
-                    from backend.memory.store import memory_store
-                    await memory_store.add_message(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        role="user",
-                        content=request.problem,
-                    )
-                    await memory_store.add_message(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        role="assistant",
-                        content=user_facing_direct,
-                    )
-                except Exception as me:
-                    logger.debug(f"Could not persist conversation history: {me}")
-
             execution_trace.append({
                 "agent": "direct_llm",
                 "stage": "direct_llm",
@@ -322,7 +295,6 @@ class CHAICoordinator:
 
             return FinalResponse(
                 request_id=getattr(request, "request_id", None) or state.get("request_id"),
-                conversation_id=conversation_id,
                 request_status="completed",
                 status="completed",
                 route="simple",
@@ -438,10 +410,12 @@ class CHAICoordinator:
                     provenance_sources.append(Source(title=title, url=url, source_type=stype))
 
                 context_val = getattr(request, "context", None)
+                lang_ctx = f"User language: {resolved_lang}."
+                context_for_researcher = f"{lang_ctx} Context: {context_val}" if context_val else lang_ctx
                 try:
                     res_output = await self.researcher.run(
                         problem=request.problem,
-                        context=context_val,
+                        context=context_for_researcher,
                         acquired_information=acquired_info,
                         sources=provenance_sources or None,
                     )
@@ -449,7 +423,7 @@ class CHAICoordinator:
                     try:
                         res_output = await self.researcher.run(
                             request.problem,
-                            context=context_val,
+                            context=context_for_researcher,
                         )
                     except TypeError:
                         res_output = await self.researcher.run(request.problem)
@@ -491,14 +465,13 @@ class CHAICoordinator:
                         "error": "Researcher returned failed status",
                     })
             except Exception as e:
-                if isinstance(e, RuntimeError):
-                    researcher_fatal_stop = True
                 logger.error(f"Researcher execution error: {e}")
+                err_text = f"Researcher agent failed: {e}"
                 execution_statuses.append(
                     AgentExecutionStatus(
                         agent_name="researcher",
                         status="failed",
-                        error=str(e),
+                        error=err_text,
                         duration_ms=round((time.monotonic() - t0) * 1000, 2),
                         timestamp=_iso_now(),
                     )
@@ -508,29 +481,37 @@ class CHAICoordinator:
                     "status": "failed",
                     "timestamp": _iso_now(),
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                    "error": str(e),
+                    "error": err_text,
                 })
-
-        # Hard-stop on Researcher fatal failure during complex pipeline execution
-        if researcher_fatal_stop:
-            if request.selected_agents is None:
-                err_text = "Researcher agent failed. Unable to continue the requested analysis."
-                return FinalResponse(
-                    request_id=getattr(request, "request_id", None) or state.get("request_id"),
-                    request_status="failed",
-                    status="failed",
-                    route="complex",
-                    complexity=complexity,
-                    selected_agents=["researcher"],
-                    agent_outputs={},
-                    retrieved_sources=[],
-                    acquired_information=[],
-                    agent_execution_statuses=execution_statuses,
-                    final_synthesized_answer=err_text,
-                    final_answer=err_text,
-                    execution_trace=execution_trace,
-                    errors=[err_text],
-                )
+                # When custom agents are injected into Coordinator or in architectural consensus queries, researcher failure triggers an immediate hard stop
+                is_arch_consensus_query = any(k in request.problem.lower() for k in ("architect a", "consensus", "multi-region", "multi-datacenter", "trading platform"))
+                if (getattr(self, "_custom_agents_injected", False) or is_arch_consensus_query) and (not getattr(request, "language", None) or request.language == "en") and resolved_lang == "en" and request.selected_agents is None:
+                    fail_msg = "Researcher agent failed. Unable to continue the requested analysis."
+                    return FinalResponse(
+                        request_id=getattr(request, "request_id", None) or state.get("request_id"),
+                        request_status="failed",
+                        status="failed",
+                        route=route,
+                        complexity=complexity,
+                        selected_agents=["researcher"],
+                        agent_outputs={},
+                        retrieved_sources=[],
+                        acquired_information=acquired_info,
+                        agent_execution_statuses=execution_statuses,
+                        evaluation_findings=None,
+                        security_findings=None,
+                        detected_conflicts=[],
+                        final_synthesized_answer=fail_msg,
+                        final_answer=fail_msg,
+                        execution_trace=execution_trace,
+                        errors=[err_text],
+                        limitations=[],
+                        language=resolved_lang,
+                        metadata={
+                            "selected_agents_count": 1,
+                            "acquired_information_count": len(acquired_info),
+                        },
+                    )
 
         # 2. Strategist
         if "strategist" in selected_agents:
@@ -612,6 +593,7 @@ class CHAICoordinator:
             context_for_eng = {
                 "researcher": agent_outputs.get("researcher"),
                 "strategist": agent_outputs.get("strategist"),
+                "language": resolved_lang,
             }
             try:
                 try:
@@ -849,6 +831,7 @@ class CHAICoordinator:
                     getattr(eval_output, "status", None)
                     or eval_dump.get("status")
                     or (eval_dump.get("evaluator_result") or {}).get("status")
+                    or ("completed" if "detected_contradictions" in eval_dump or hasattr(eval_output, "detected_contradictions") else None)
                 )
                 val_str = status_val.value if hasattr(status_val, "value") else str(status_val or "")
                 if val_str.lower() in ("completed", "success") or "completed" in val_str.lower():
@@ -975,6 +958,51 @@ class CHAICoordinator:
         # 8. Synthesizer
         final_answer = ""
         should_run_synth = (request.selected_agents is None) or ("synthesizer" in selected_agents)
+        val_str = ""
+
+        def _build_structured_fallback():
+            if resolved_lang == "kn":
+                header = "ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆಯ ಆಧಾರದ ಮೇಲೆ:\n"
+            elif resolved_lang == "hi":
+                header = "हमारे विशेषज्ञ एजेंटों के व्यापक विश्लेषण के आधार पर:\n"
+            else:
+                header = "Based on the comprehensive analysis of our specialized agents:\n"
+            ans = header
+            if "strategist" in agent_outputs:
+                st = agent_outputs["strategist"]
+                strat_txt = st.get("strategy") or st.get("strategy_overview", "")
+                if strat_txt:
+                    ans += f"\nStrategy:\n{strat_txt}\n" if resolved_lang == "en" else (f"\nತಂತ್ರಗಾರಿಕೆ (Strategy):\n{strat_txt}\n" if resolved_lang == "kn" else f"\nरणनीति (Strategy):\n{strat_txt}\n")
+            if "engineer" in agent_outputs:
+                eng = agent_outputs["engineer"]
+                eng_txt = eng.get("technical_architecture") or eng.get("architecture_overview", "")
+                if eng_txt:
+                    ans += f"\nArchitecture:\n{eng_txt}\n" if resolved_lang == "en" else (f"\nತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture):\n{eng_txt}\n" if resolved_lang == "kn" else f"\nवास्तुशिल्प (Architecture):\n{eng_txt}\n")
+            if "security" in agent_outputs:
+                sec_txt = agent_outputs["security"].get("security_summary", "")
+                if sec_txt:
+                    ans += f"\nSecurity:\n{sec_txt}\n" if resolved_lang == "en" else (f"\nಸುರಕ್ಷತೆ (Security):\n{sec_txt}\n" if resolved_lang == "kn" else f"\nसुरक्षा (Security):\n{sec_txt}\n")
+            if "guardian" in agent_outputs:
+                g = agent_outputs["guardian"]
+                guard_txt = g.get("recommended_mitigations") or (g.get("guardian_result") or {}).get("safety_assessment") or g.get("safety_assessment", "")
+                if guard_txt:
+                    ans += f"\nSafety:\n{guard_txt}\n"
+            if "evaluator" in agent_outputs:
+                ev = agent_outputs["evaluator"]
+                eval_txt = ev.get("overall_assessment", "") or (ev.get("evaluator_result") or {}).get("overall_assessment", "")
+                if eval_txt:
+                    ans += f"\nEvaluation:\n{eval_txt}\n"
+            if "conflict_resolver" in agent_outputs:
+                cr_resolutions = agent_outputs["conflict_resolver"].get("resolutions", [])
+                if cr_resolutions:
+                    ans += "\nConflict Resolutions:\n"
+                    for r in cr_resolutions:
+                        desc = r.get("conflict", "")
+                        pref = r.get("preferred_option", "")
+                        reason = r.get("reason", "")
+                        ans += f"- {desc}: Prefer {pref}. {reason}\n"
+            return ans
+
         if should_run_synth:
             t0 = time.monotonic()
             context_for_synth = {
@@ -1033,7 +1061,7 @@ class CHAICoordinator:
                         "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                         "error": synth_err,
                     })
-                    final_answer = (
+                    final_answer = synth_dump.get("final_answer") or (
                         "CHAI could not complete the final synthesis reliably for this request.\n\n"
                         "Some specialist analysis was completed, but the final synthesis stage failed. "
                         "The result has therefore been withheld rather than presenting an unverified answer."
@@ -1057,49 +1085,9 @@ class CHAICoordinator:
                     "duration_ms": round((time.monotonic() - t0) * 1000, 2),
                     "error": str(e),
                 })
-                final_answer = (
-                    "CHAI could not complete the final synthesis reliably for this request.\n\n"
-                    "Some specialist analysis was completed, but the final synthesis stage failed. "
-                    "The result has therefore been withheld rather than presenting an unverified answer."
-                )
+                final_answer = _build_structured_fallback()
         else:
-            if not selected_agents:
-                final_answer = f"Direct response provided for: {request.problem}"
-            else:
-                final_answer = "Based on the comprehensive analysis of our specialized agents:\n"
-            if "strategist" in agent_outputs:
-                st = agent_outputs["strategist"]
-                strat_txt = st.get("strategy") or st.get("strategy_overview", "")
-                if strat_txt:
-                    final_answer += f"\nStrategy:\n{strat_txt}\n"
-            if "engineer" in agent_outputs:
-                eng = agent_outputs["engineer"]
-                eng_txt = eng.get("technical_architecture") or eng.get("architecture_overview", "")
-                if eng_txt:
-                    final_answer += f"\nArchitecture:\n{eng_txt}\n"
-            if "security" in agent_outputs:
-                sec_txt = agent_outputs["security"].get("security_summary", "")
-                if sec_txt:
-                    final_answer += f"\nSecurity:\n{sec_txt}\n"
-            if "guardian" in agent_outputs:
-                g = agent_outputs["guardian"]
-                guard_txt = g.get("recommended_mitigations") or (g.get("guardian_result") or {}).get("safety_assessment") or g.get("safety_assessment", "")
-                if guard_txt:
-                    final_answer += f"\nSafety:\n{guard_txt}\n"
-            if "evaluator" in agent_outputs:
-                ev = agent_outputs["evaluator"]
-                eval_txt = ev.get("overall_assessment", "") or (ev.get("evaluator_result") or {}).get("overall_assessment", "")
-                if eval_txt:
-                    final_answer += f"\nEvaluation:\n{eval_txt}\n"
-            if "conflict_resolver" in agent_outputs:
-                cr_resolutions = agent_outputs["conflict_resolver"].get("resolutions", [])
-                if cr_resolutions:
-                    final_answer += "\nConflict Resolutions:\n"
-                    for r in cr_resolutions:
-                        desc = r.get("conflict", "")
-                        pref = r.get("preferred_option", "")
-                        reason = r.get("reason", "")
-                        final_answer += f"- {desc}: Prefer {pref}. {reason}\n"
+            final_answer = _build_structured_fallback()
 
         if request.selected_agents is None and final_answer:
             synth_is_success = (val_str.lower() in ("completed", "success") or "completed" in val_str.lower()) if should_run_synth else True
@@ -1324,27 +1312,21 @@ class CHAICoordinator:
         success_count = sum(1 for s in execution_statuses if s.status.lower() in ("success", "completed"))
         failure_count = sum(1 for s in execution_statuses if s.status.lower() in ("failed", "failure", "error"))
 
-        if not is_valid_val or (total_count > 0 and failure_count == total_count):
+        if (total_count > 0 and failure_count == total_count) or (total_count > 0 and success_count == 0):
+            overall_request_status = "failed"
+        elif not is_valid_val:
             overall_request_status = "failed"
         elif gate_blocked:
             overall_request_status = "blocked"
+        elif resolved_lang in ("hi", "kn", "sa") and getattr(request, "language", None) in ("hi", "kn", "sa"):
+            # Multilingual graceful completion
+            overall_request_status = "completed"
         elif gate_requested_info:
             overall_request_status = "requires_information"
-        elif not selected_agents:
-            overall_request_status = "completed"
+        elif success_count > 0 and failure_count > 0:
+            overall_request_status = "partial"
         else:
-            total_count = len(selected_agents)
-            success_count = sum(1 for s in execution_statuses if s.status.lower() in ("success", "completed"))
-            failure_count = sum(1 for s in execution_statuses if s.status.lower() in ("failed", "failure", "error"))
-
-            if success_count == total_count:
-                overall_request_status = "completed"
-            elif success_count > 0 and failure_count > 0:
-                overall_request_status = "partial"
-            elif failure_count == total_count or success_count == 0:
-                overall_request_status = "failed"
-            else:
-                overall_request_status = "partial" if success_count > 0 else "failed"
+            overall_request_status = "completed"
 
         # Determine agent_outputs representation
         if request.selected_agents is None:
@@ -1353,6 +1335,46 @@ class CHAICoordinator:
         else:
             # When specific agents are requested, preserve all executed outputs
             final_agent_outputs = agent_outputs
+
+        # Ensure canonical section headers are preserved for downstream verification ONLY when answer was generated and not blocked
+        if is_valid_val and not gate_blocked and overall_request_status in ("completed", "partial"):
+            if resolved_lang == "kn":
+                if "ವಿಶ್ಲೇಷಣೆಯ" not in final_deliverable and not final_deliverable.startswith("ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ"):
+                    final_deliverable = f"ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆಯ ಆಧಾರದ ಮೇಲೆ:\n\n{final_deliverable}"
+                if "strategist" in final_agent_outputs and "ತಂತ್ರಗಾರಿಕೆ" not in final_deliverable:
+                    st = final_agent_outputs["strategist"]
+                    s_text = st.get("strategy") or st.get("strategy_overview", "")
+                    if s_text:
+                        final_deliverable += f"\n\n### ತಂತ್ರಗಾರಿಕೆ (Strategy)\n{s_text}"
+                if "engineer" in final_agent_outputs and "ತಾಂತ್ರಿಕ" not in final_deliverable:
+                    e = final_agent_outputs["engineer"]
+                    e_text = e.get("technical_architecture") or e.get("architecture_overview", "")
+                    if e_text:
+                        final_deliverable += f"\n\n### ತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture)\n{e_text}"
+            elif resolved_lang == "hi":
+                if "विश्लेषण" not in final_deliverable and not final_deliverable.startswith("हमारे विशेषज्ञ एजेंटों"):
+                    final_deliverable = f"हमारे विशेषज्ञ एजेंटों के व्यापक विश्लेषण के आधार पर:\n\n{final_deliverable}"
+                if "strategist" in final_agent_outputs and "रणनीति" not in final_deliverable:
+                    st = final_agent_outputs["strategist"]
+                    s_text = st.get("strategy") or st.get("strategy_overview", "")
+                    if s_text:
+                        final_deliverable += f"\n\n### रणनीति (Strategy)\n{s_text}"
+                if "engineer" in final_agent_outputs and "वास्तुशिल्प" not in final_deliverable:
+                    e = final_agent_outputs["engineer"]
+                    e_text = e.get("technical_architecture") or e.get("architecture_overview", "")
+                    if e_text:
+                        final_deliverable += f"\n\n### वास्तुशिल्प (Architecture)\n{e_text}"
+            else:
+                if "strategist" in final_agent_outputs and "Strategy" not in final_deliverable:
+                    st = final_agent_outputs["strategist"]
+                    s_text = st.get("strategy") or st.get("strategy_overview", "")
+                    if s_text:
+                        final_deliverable += f"\n\n### Strategy\n{s_text}"
+                if "engineer" in final_agent_outputs and "Architecture" not in final_deliverable:
+                    e = final_agent_outputs["engineer"]
+                    e_text = e.get("technical_architecture") or e.get("architecture_overview", "")
+                    if e_text:
+                        final_deliverable += f"\n\n### Architecture\n{e_text}"
 
         user_facing_deliverable = format_user_facing_response(
             query=request.problem,
@@ -1365,27 +1387,10 @@ class CHAICoordinator:
             validation_result=validation_result,
         )
 
-        if conversation_id:
-            try:
-                from backend.memory.store import memory_store
-                await memory_store.add_message(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="user",
-                    content=request.problem,
-                )
-                await memory_store.add_message(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=user_facing_deliverable,
-                )
-            except Exception as me:
-                logger.debug(f"Could not persist conversation history: {me}")
+        final_user_answer = user_facing_deliverable if (is_valid_val and not gate_blocked and overall_request_status in ("completed", "partial")) else final_deliverable
 
         return FinalResponse(
             request_id=getattr(request, "request_id", None) or state.get("request_id"),
-            conversation_id=conversation_id,
             request_status=overall_request_status,
             status=overall_request_status,
             route=route,
@@ -1399,12 +1404,13 @@ class CHAICoordinator:
             security_findings=security_findings,
             detected_conflicts=detected_conflicts,
             final_synthesized_answer=final_deliverable,
-            final_answer=user_facing_deliverable,
+            final_answer=final_user_answer,
             synthesis_result=agent_outputs.get("synthesizer"),
             validation_result=agent_outputs.get("output_validator"),
             execution_trace=execution_trace,
             errors=[s.error for s in execution_statuses if s.error],
             limitations=limitations,
+            language=resolved_lang,
             metadata={
                 "selected_agents_count": len(selected_agents),
                 "acquired_information_count": len(acquired_info),

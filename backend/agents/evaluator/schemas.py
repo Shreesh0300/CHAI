@@ -129,6 +129,8 @@ class EvaluatorOutput(BaseModel):
     missing_evidence: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
 
+    status: Optional[str] = Field("completed", description="Status of the evaluation.")
+    agent: Optional[str] = Field("evaluator", description="Agent name.")
     evaluator_result: Optional[EvaluatorResult] = Field(None, description="Full canonical Evaluator analysis.")
 
     @classmethod

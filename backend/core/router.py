@@ -631,6 +631,79 @@ def is_simple_query(problem: str) -> bool:
     return route_request(problem).route == ROUTE_SIMPLE
 
 
+CANONICAL_AGENTS = [
+    "researcher",
+    "strategist",
+    "engineer",
+    "guardian",
+    "security",
+    "evaluator",
+]
+
+SIMPLE_QUERY_PREFIXES = (
+    "what is a python list",
+    "what is a list in python",
+    "what is a variable",
+    "define a ",
+    "what is the definition of",
+)
+
+
+def is_simple_factual_query(problem: str) -> bool:
+    """
+    Identifies trivial or simple definitional questions where running full
+    system engineering and threat modelling is unnecessary.
+    """
+    cleaned = problem.strip().lower()
+    if not cleaned:
+        return False
+    
+    for prefix in SIMPLE_QUERY_PREFIXES:
+        if cleaned.startswith(prefix):
+            return True
+            
+    words = cleaned.split()
+    if len(words) <= 6 and (cleaned.startswith("what is") or cleaned.startswith("define")):
+        technical_design_keywords = {
+            "design", "system", "architecture", "platform", "infrastructure",
+            "security", "patient", "clinical", "hospital", "financial", "bank", "deploy"
+        }
+        if not any(kw in words for kw in technical_design_keywords):
+            return True
+            
+    return False
+
+
+def route_agents_for_problem(
+    problem: str,
+    requested_agents: Optional[List[str]] = None,
+    allow_conditional_routing: bool = False,
+    model: Optional[str] = None,
+) -> List[str]:
+    """
+    Routes and selects which agents should run for a given problem.
+    Supports category/domain mode: "Auto", "Business", "Personal", "Software".
+    """
+    if requested_agents:
+        valid = [a.lower().strip() for a in requested_agents if a.lower().strip() in CANONICAL_AGENTS]
+        if valid:
+            return valid
+
+    if model:
+        m = model.strip().lower()
+        if m == "business":
+            return ["researcher", "strategist", "evaluator"]
+        elif m == "personal":
+            return ["researcher", "guardian", "strategist", "evaluator"]
+        elif m == "software":
+            return ["engineer", "security", "researcher", "evaluator"]
+
+    if allow_conditional_routing and is_simple_factual_query(problem):
+        return ["researcher", "evaluator"]
+
+    return list(CANONICAL_AGENTS)
+
+
 __all__ = [
     "ROUTE_SIMPLE",
     "ROUTE_COMPLEX",
@@ -638,9 +711,12 @@ __all__ = [
     "PERSONAL_CAREER_AGENTS",
     "BUSINESS_STRATEGY_AGENTS",
     "SIMPLE_AGENTS",
+    "CANONICAL_AGENTS",
     "RouteDecision",
     "RouterDecision",
     "Router",
     "route_request",
     "is_simple_query",
+    "is_simple_factual_query",
+    "route_agents_for_problem",
 ]

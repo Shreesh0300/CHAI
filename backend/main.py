@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import get_settings
 from backend.api.health import router as health_router
 from backend.api.routes import router as api_router
-from backend.api.chat_routes import router as chat_router
 from backend.api.auth_routes import router as auth_router
 from backend.api.history_routes import router as history_router
 from backend.api.voice_routes import router as voice_router
+from backend.api.chat_routes import router as chat_router
 
 def create_app() -> FastAPI:
     settings = get_settings()
