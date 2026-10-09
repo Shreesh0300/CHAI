@@ -311,6 +311,8 @@ export function AssistantOrb({
       // -------------------------------------------------------------
       // 6. Fluid Undulating Audio Soundwaves & Spectrum Bars
       // -------------------------------------------------------------
+      const maxHeight = orbRadius * 0.95
+
       // Dynamic wave amplitude based on state and speech
       let waveAmp = 10
       if (currentState === "speaking") {
@@ -364,7 +366,6 @@ export function AssistantOrb({
       const gap = (totalWidth - numBars * barWidth) / (numBars - 1)
       const startX = cx - totalWidth / 2
       const mid = (numBars - 1) / 2
-      const maxHeight = orbRadius * 0.95
 
       for (let i = 0; i < numBars; i++) {
         // Gaussian bell-curve envelope: highest in center, tapering to sides
