@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 
 from backend.core.contracts import SynthesisResult, ValidationResult as ContractValidationResult
+from backend.core.domain_lenses import normalize_domain, get_domain_lens
 from backend.shared.logger import get_logger
 
 logger = get_logger(__name__)
@@ -126,10 +127,17 @@ class OutputValidator:
         *,
         synthesis: Any = None,
         problem: Optional[str] = None,
+        domain: Optional[str] = None,
     ) -> OutputValidationResult:
         """Validate candidate output structurally and operationally."""
         try:
-            return self._do_validate(output=output, context=context, synthesis=synthesis, problem=problem)
+            return self._do_validate(
+                output=output,
+                context=context,
+                synthesis=synthesis,
+                problem=problem,
+                domain=domain,
+            )
         except Exception as exc:
             logger.error(f"OutputValidator internal execution error: {exc}")
             return OutputValidationResult(
@@ -151,9 +159,18 @@ class OutputValidator:
         *,
         synthesis: Any = None,
         problem: Optional[str] = None,
+        domain: Optional[str] = None,
     ) -> OutputValidationResult:
         errors: List[str] = []
         warnings: List[str] = []
+
+        resolved_domain = (
+            domain
+            or (context.get("domain") if isinstance(context, dict) else None)
+            or (context.get("domain_category") if isinstance(context, dict) else None)
+            or (context.get("resolved_domain") if isinstance(context, dict) else None)
+        )
+        canonical_domain = normalize_domain(resolved_domain)
 
         # Determine target
         target = synthesis if synthesis is not None else output
@@ -266,6 +283,28 @@ class OutputValidator:
         if fence_count % 2 != 0:
             warnings.append("Unclosed markdown code block fence detected.")
 
+        # -------------------------------------------------------------
+        # 8. Domain-Aware Reasoning Quality Validation
+        # -------------------------------------------------------------
+        if canonical_domain == "software":
+            # Check for cryptographic accuracy: calling JWT signature verification "decryption"
+            if re.search(r"\b(?:decrypt(?:ing|ion)?\s+(?:the\s+)?(?:jwt|signature|token))\b", trimmed, re.IGNORECASE) or \
+               re.search(r"\b(?:jwt\s+signature\s+verification\s+is\s+decryption)\b", trimmed, re.IGNORECASE):
+                warnings.append("Technical inaccuracy: JWT signature verification should not be described as decryption (signed JWTs are cryptographically verified, not decrypted).")
+            # Check for overpromising HttpOnly cookie immunity against XSS
+            if re.search(r"\bhttponly\s+cookies?\s+(?:completely\s+)?prevents?\s+xss\b", trimmed, re.IGNORECASE):
+                warnings.append("Security caveat: HttpOnly cookies prevent script token theft via document.cookie, but do not stop ambient requests under XSS without CSRF/CSP defense.")
+
+        elif canonical_domain == "personal":
+            # Check for unhelpful bare refusal without preliminary guidance
+            if "additional information is required before a completed answer can be provided" in trimmed.lower() and len(trimmed) < 200:
+                errors.append("Unhelpful refusal: Personal decision queries must provide preliminary guidance and decision framework even when details are missing.")
+
+        elif canonical_domain == "business":
+            # Check for completely unhedged, unverified absolute claims in business strategy
+            if re.search(r"\bguaranteed\s+(?:0%|zero)\s+churn\b", trimmed, re.IGNORECASE):
+                warnings.append("Business claim caveat: Absolute churn claims lack empirical support without customer discovery.")
+
         is_valid = len(errors) == 0
 
         # When valid, sanitized_output is the clean text.
@@ -287,6 +326,8 @@ class OutputValidator:
                 "length": len(trimmed),
                 "has_warnings": len(warnings) > 0,
                 "error_count": len(errors),
+                "domain": canonical_domain,
+                "domain_lens_applied": canonical_domain in ("business", "personal", "software"),
             },
         )
 

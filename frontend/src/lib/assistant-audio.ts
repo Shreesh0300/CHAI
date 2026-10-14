@@ -91,11 +91,113 @@ export function stopAssistantAudio(): void {
 }
 
 /**
+ * Cleans assistant response text before sending to Text-to-Speech:
+ * - Strips Markdown headers, bold, italics, links, blockquotes, bullets
+ * - Removes code blocks, inline code, and HTML tags
+ * - Eliminates raw JSON blocks and internal agent metadata
+ * - Normalizes spacing into smooth, natural spoken sentences
+ */
+export function cleanTextForSpeech(rawText: string): string {
+  if (!rawText) return "";
+
+  let text = rawText;
+
+  // 1. Remove code blocks entirely
+  text = text.replace(/```[\s\S]*?```/g, " ");
+
+  // 2. Remove inline code
+  text = text.replace(/`([^`]+)`/g, "$1");
+
+  // 3. Remove markdown headers
+  text = text.replace(/#{1,6}\s*([^\n]+)/g, "$1. ");
+
+  // 4. Remove bold & italics
+  text = text.replace(/\*\*([^*]+)\*\*/g, "$1");
+  text = text.replace(/\*([^*]+)\*/g, "$1");
+  text = text.replace(/__([^_]+)__/g, "$1");
+  text = text.replace(/_([^_]+)_/g, "$1");
+
+  // 5. Remove bullet list markers
+  text = text.replace(/^\s*[-*+]\s+/gm, "");
+  text = text.replace(/^\s*\d+\.\s+/gm, "");
+
+  // 6. Remove markdown links ([text](url) -> text) and URLs
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  text = text.replace(/https?:\/\/\S+/g, "");
+
+  // 7. Remove tables and horizontal rules
+  text = text.replace(/\|[^\n]+\|/g, "");
+  text = text.replace(/[-=]{3,}/g, "");
+
+  // 8. Remove JSON blocks or braces if any
+  text = text.replace(/\{[^{}]*\}/g, "");
+
+  // 9. Normalize whitespace
+  text = text.replace(/\s+/g, " ").trim();
+
+  return text;
+}
+
+/**
+ * Cleans assistant response text for DISPLAY in the UI:
+ * - Strips leftover Markdown formatting (**, *, ##, ---, etc.)
+ * - Removes code block markers
+ * - Preserves paragraph structure
+ * - Makes text readable without raw markdown artifacts
+ */
+export function cleanTextForDisplay(rawText: string): string {
+  if (!rawText) return "";
+
+  let text = rawText;
+
+  // 1. Remove code block markers but preserve content
+  text = text.replace(/```[a-zA-Z]*\n?/g, "");
+  text = text.replace(/```/g, "");
+
+  // 2. Remove inline code backticks
+  text = text.replace(/`([^`]+)`/g, "$1");
+
+  // 3. Remove markdown headers but keep text
+  text = text.replace(/^#{1,6}\s+/gm, "");
+
+  // 4. Remove bold markers (** and __)
+  text = text.replace(/\*\*([^*]+)\*\*/g, "$1");
+  text = text.replace(/__([^_]+)__/g, "$1");
+
+  // 5. Remove italic markers (* and _) — careful not to break multiplication
+  text = text.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, "$1");
+  text = text.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "$1");
+
+  // 6. Remove strikethrough
+  text = text.replace(/~~([^~]+)~~/g, "$1");
+
+  // 7. Remove horizontal rules
+  text = text.replace(/^[-*_]{3,}\s*$/gm, "");
+
+  // 8. Clean up bullet markers at start of lines
+  text = text.replace(/^\s*[-*+]\s+/gm, "• ");
+
+  // 9. Remove markdown links, keep text
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+  // 10. Remove blockquote markers
+  text = text.replace(/^>\s?/gm, "");
+
+  // 11. Clean up excessive blank lines
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  // 12. Remove leading/trailing whitespace per line
+  text = text.split("\n").map(l => l.trimEnd()).join("\n").trim();
+
+  return text;
+}
+
+/**
  * Splits long text into reasonable paragraphs/sentences so that speech can begin quickly
  * and is immediately interruptible without downloading a massive audio payload.
  */
 function splitTextIntoChunks(text: string): string[] {
-  const clean = text.trim();
+  const clean = cleanTextForSpeech(text);
   if (!clean) return [];
 
   // If text is short (< 350 chars), keep as a single chunk
@@ -138,14 +240,15 @@ export interface PlayAudioOptions {
 
 /**
  * Streams and plays assistant speech with immediate stop capability and chunking.
+ * Strictly guarantees microphone is not opened while speaking.
  */
 export async function playAssistantAudio(
   text: string,
   language: string = "en",
   options?: PlayAudioOptions
 ): Promise<boolean> {
-  const cleanText = text.trim();
-  if (!cleanText) return false;
+  const cleaned = cleanTextForSpeech(text);
+  if (!cleaned) return false;
 
   // Stop any ongoing playback before starting new
   stopAssistantAudio();
@@ -155,22 +258,22 @@ export async function playAssistantAudio(
   // Auto-detect target script if not explicitly specified
   let targetLang = language || "en";
   if (!language || language === "en") {
-    if (/[\u0C80-\u0CFF]/.test(cleanText)) {
+    if (/[\u0C80-\u0CFF]/.test(cleaned)) {
       targetLang = "kn";
-    } else if (/[\u0900-\u097F]/.test(cleanText)) {
+    } else if (/[\u0900-\u097F]/.test(cleaned)) {
       targetLang = "hi";
-    } else if (/[\u0900-\u0963\u0970-\u097F]/.test(cleanText)) {
+    } else if (/[\u0900-\u0963\u0970-\u097F]/.test(cleaned)) {
       targetLang = "sa";
     }
   }
 
-  // Start dual-engine interrupt listener (Shout detector + SpeechRecognition + Hotkeys)
+  // Keyboard interrupt listener (Escape / Space)
   startInterruptListener(() => {
     stopAssistantAudio();
     options?.onInterrupt?.();
   });
 
-  const chunks = splitTextIntoChunks(cleanText);
+  const chunks = splitTextIntoChunks(cleaned);
   options?.onStart?.();
 
   for (let i = 0; i < chunks.length; i++) {
@@ -181,7 +284,7 @@ export async function playAssistantAudio(
 
     const played = await playSingleChunk(chunk, targetLang);
     if (!played && !stopRequested) {
-      // Fallback to browser speech for remaining text if network failed
+      // Fallback to browser speech for remaining text if backend network failed
       await fallbackSpeechAsync(chunk, targetLang);
     }
 
@@ -329,17 +432,17 @@ function fallbackSpeechAsync(text: string, lang: string = "en"): Promise<void> {
 }
 
 /**
- * Dual-engine voice & keyboard interrupt listener active ONLY while TTS is speaking:
- * 1. Web Audio Shout / Energy Spike Detector (instant local hardware detection for shouting "stop")
- * 2. SpeechRecognition ASR for keyword detection ("stop", "cancel", "be quiet", etc.)
- * 3. Keyboard Escape / Space key hotkey
+ * Keyboard & UI interrupt listener active ONLY while TTS is speaking:
+ * - Listens for Escape or Space key to halt playback immediately
+ * - Strictly does NOT open microphone or SpeechRecognition while speaking
+ * - Guarantees microphone remains OFF so assistant never hears its own voice
  */
 export function startInterruptListener(onInterrupt: () => void): void {
   stopInterruptListener();
 
   if (typeof window === "undefined") return;
 
-  // 1. Keyboard interrupt listener (Escape or Space key)
+  // Keyboard interrupt listener (Escape or Space key)
   activeKeydownListener = (e: KeyboardEvent) => {
     const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
     if (e.key === "Escape" || (e.code === "Space" && targetTag !== "input" && targetTag !== "textarea")) {
@@ -349,161 +452,17 @@ export function startInterruptListener(onInterrupt: () => void): void {
     }
   };
   window.addEventListener("keydown", activeKeydownListener);
-
-  // 2. Real-time Web Audio Shout / Voice Break-in Detector (0ms latency local detector)
-  if (navigator?.mediaDevices?.getUserMedia) {
-    navigator.mediaDevices
-      .getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
-      .then((stream) => {
-        if (stopRequested || !isPlayingInternal) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-
-        activeShoutStream = stream;
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        const audioCtx = new AudioContextClass();
-        activeShoutAudioCtx = audioCtx;
-
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.2; // very fast reaction to shouts
-        source.connect(analyser);
-
-        const timeData = new Uint8Array(analyser.frequencyBinCount);
-        const startTime = Date.now();
-        let consecutiveShoutFrames = 0;
-        let baselineRms = 0.015;
-
-        const checkShout = () => {
-          if (stopRequested || !isPlayingInternal) return;
-
-          analyser.getByteTimeDomainData(timeData);
-          let sumSquares = 0;
-          for (let i = 0; i < timeData.length; i++) {
-            const norm = (timeData[i] - 128) / 128;
-            sumSquares += norm * norm;
-          }
-          const rms = Math.sqrt(sumSquares / timeData.length);
-          const elapsed = Date.now() - startTime;
-
-          // Warmup: track baseline level in first 250ms
-          if (elapsed < 250) {
-            baselineRms = Math.max(baselineRms, rms);
-          } else {
-            // Adaptive shout threshold: must exceed baseline by 2.2x and be >= 0.045
-            const shoutThreshold = Math.max(0.045, baselineRms * 2.2);
-            if (rms >= shoutThreshold) {
-              consecutiveShoutFrames++;
-              if (consecutiveShoutFrames >= 2) {
-                console.log("Voice shout interruption detected! Level:", rms, "Threshold:", shoutThreshold);
-                stopAssistantAudio();
-                onInterrupt();
-                return;
-              }
-            } else {
-              consecutiveShoutFrames = 0;
-            }
-          }
-
-          activeShoutAnimFrame = requestAnimationFrame(checkShout);
-        };
-
-        activeShoutAnimFrame = requestAnimationFrame(checkShout);
-      })
-      .catch((err) => {
-        console.debug("Shout detector stream note:", err);
-      });
-  }
-
-  // 3. Browser SpeechRecognition voice keyword listener running in parallel
-  const SpeechRecognitionClass =
-    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  if (!SpeechRecognitionClass) return;
-
-  function launchRecognition() {
-    if (stopRequested || !isPlayingInternal) return;
-
-    try {
-      const recognition = new SpeechRecognitionClass();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 3;
-      recognition.lang = navigator.language || "en-US";
-
-      recognition.onresult = (event: any) => {
-        let combined = "";
-        for (let i = 0; i < event.results.length; i++) {
-          for (let j = 0; j < event.results[i].length; j++) {
-            const part = event.results[i][j].transcript || "";
-            combined += " " + part;
-          }
-        }
-
-        const normalized = combined.toLowerCase().trim();
-        if (INTERRUPT_KEYWORD_REGEX.test(normalized)) {
-          console.log("Voice interruption keyword detected ('stop' spoken):", normalized);
-          stopAssistantAudio();
-          try {
-            recognition.stop();
-          } catch {}
-          onInterrupt();
-        }
-      };
-
-      recognition.onerror = (e: any) => {
-        console.debug("Interrupt recognition notice:", e?.error);
-        if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
-          return;
-        }
-      };
-
-      recognition.onend = () => {
-        // If TTS is still actively speaking, recreate fresh recognition after debounce
-        if (isPlayingInternal && !stopRequested) {
-          clearTimeout(interruptRestartTimer);
-          interruptRestartTimer = setTimeout(() => {
-            launchRecognition();
-          }, 120);
-        }
-      };
-
-      recognition.start();
-      activeInterruptRecognition = recognition;
-    } catch (err) {
-      console.debug("Interrupt recognition start notice:", err);
-      if (isPlayingInternal && !stopRequested) {
-        clearTimeout(interruptRestartTimer);
-        interruptRestartTimer = setTimeout(() => {
-          launchRecognition();
-        }, 200);
-      }
-    }
-  }
-
-  // Small delay to allow previous audio recording tracks to release cleanly
-  clearTimeout(interruptRestartTimer);
-  interruptRestartTimer = setTimeout(() => {
-    launchRecognition();
-  }, 100);
 }
 
 export function stopInterruptListener(): void {
-  if (interruptRestartTimer) {
-    clearTimeout(interruptRestartTimer);
-    interruptRestartTimer = null;
-  }
-
   if (activeKeydownListener && typeof window !== "undefined") {
     window.removeEventListener("keydown", activeKeydownListener);
     activeKeydownListener = null;
+  }
+
+  if (interruptRestartTimer) {
+    clearTimeout(interruptRestartTimer);
+    interruptRestartTimer = null;
   }
 
   if (activeShoutAnimFrame) {

@@ -10,6 +10,7 @@ import asyncio
 from typing import Optional
 
 from backend.chat.schemas import IntentResult
+from backend.core.router import route_request, ROUTE_SIMPLE, ROUTE_COMPLEX
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
 
@@ -30,6 +31,13 @@ SIMPLE_CHAT_PATTERNS = [
     re.compile(r"^(?:help\s+me\s+plan\s+my\s+day|what\s+should\s+i\s+focus\s+on\s+today|plan\s+my\s+schedule)\b", re.IGNORECASE),
     # Conversational sharing
     re.compile(r"^(?:i(?:'ve|\s+have)\s+been\s+working\s+on\s+my\s+project|i(?:'m|\s+am)\s+tired|i\s+just\s+woke\s+up)\b", re.IGNORECASE),
+    # Conversational follow-ups, names, and personal reference questions
+    re.compile(r"^(?:what\s+(?:am\s+i|is\s+[\w\s]{1,30}|are\s+we)\s+(?:building|working\s+on|doing|creating|making))\b", re.IGNORECASE),
+    re.compile(r"^(?:what\s+[\w\s]{1,30}\s+is\s+(?:building|working\s+on|doing|creating|making))\b", re.IGNORECASE),
+    re.compile(r"^(?:who\s+is\s+[\w\s]{1,30})\??$", re.IGNORECASE),
+    re.compile(r"^(?:what\s+is\s+(?:my|the|our)\s+(?:project|startup|product|company)(?:'?s)?(?:\s+name)?)\??$", re.IGNORECASE),
+    re.compile(r"^(?:what\s+is\s+(?:it|that|this)|tell\s+me\s+more\s+about\s+(?:it|that|this|him|her))\b", re.IGNORECASE),
+    re.compile(r"^(?:what\s+did\s+(?:i|we|you)\s+(?:say|tell|mention|discuss))\b", re.IGNORECASE),
     # Memory recall questions
     re.compile(r"^(?:remember\s+what\s+i\s+told\s+you|what\s+did\s+i\s+say|what\s+do\s+you\s+remember)\b", re.IGNORECASE),
     # Quick error lookup
@@ -45,7 +53,7 @@ COMPLEX_SOLVE_PATTERNS = [
     re.compile(r"(?:compare\s+(?:the\s+)?financial\s+risk|opportunity\s+cost|downside\s+protection)", re.IGNORECASE),
     # System design & enterprise engineering
     re.compile(r"(?:design\s+.*\b(?:platform|architecture|system|infrastructure)\s+for\s+[\d,]+)", re.IGNORECASE),
-    re.compile(r"(?:design\s+(?:a\s+)?(?:secure|scalable|production-ready|enterprise|distributed)[\w\s]{0,40}?(?:platform|architecture|system|infrastructure))", re.IGNORECASE),
+    re.compile(r"(?:design\s+(?:a\s+)?(?:comprehensive|secure|scalable|production-ready|enterprise|distributed|zero-trust)[\w\s\-]{0,50}?(?:platform|architecture|system|infrastructure))", re.IGNORECASE),
     re.compile(r"(?:architect\s+(?:an?\s+)?(?:enterprise|distributed|scalable|cloud|microservice))", re.IGNORECASE),
     # Multi-strategy analysis & multi-year planning
     re.compile(r"(?:compare\s+these\s+(?:three|3|\w+)\s+(?:business\s+)?strategies\s+and\s+recommend)", re.IGNORECASE),
@@ -75,19 +83,48 @@ Output JSON:
 
 class IntentRouter:
     """
+    Adapter between conversational chat API and authoritative CHAI core router (backend.core.router).
     Determines whether a user query requires casual conversational chat
     or deep multi-agent solve orchestration.
     """
 
-    async def classify(self, message: str) -> IntentResult:
+    async def _classify_with_llm(self, cleaned: str) -> Optional[IntentResult]:
+        """
+        Attempts LLM-based classification for boundary queries.
+        """
+        prompt = f"{ROUTER_PROMPT}\n\nUser Message: \"{cleaned}\""
+        raw_response = await asyncio.wait_for(
+            llm_client.generate_content(
+                prompt=prompt,
+                temperature=0.0,
+                timeout=3.5,
+            ),
+            timeout=3.5,
+        )
+        if raw_response and not raw_response.startswith("Mock response"):
+            clean_json = raw_response.strip()
+            if clean_json.startswith("```"):
+                clean_json = re.sub(r"^```(?:json)?\n?", "", clean_json)
+                clean_json = re.sub(r"\n?```$", "", clean_json)
+            data = json.loads(clean_json)
+            intent_val = data.get("intent", "").lower()
+            if intent_val not in ("chat", "solve"):
+                intent_val = "chat"
+            conf = float(data.get("confidence", 0.85))
+            reason = data.get("reason", "Model classified query complexity.")
+            return IntentResult(intent=intent_val, confidence=conf, reason=reason)
+        return None
+
+    async def classify(self, message: str, context: Optional[str] = None) -> IntentResult:
         """
         Classifies message into CHAT or SOLVE with confidence and reasoning.
+        The simple/complex decision is authoritative grounded in backend.core.router.route_request().
         """
         cleaned = (message or "").strip()
         if not cleaned:
             return IntentResult(intent="chat", confidence=1.0, reason="Empty message defaults to chat.")
 
-        # 1. Deterministic SOLVE checks (high complexity queries)
+        # 1. Deterministic SOLVE checks (high complexity patterns)
         for pattern in COMPLEX_SOLVE_PATTERNS:
             if pattern.search(cleaned):
                 reason = "Complex multi-variable trade-off, architectural design, or strategic risk planning requires 12-stage multi-agent reasoning."
@@ -123,41 +160,67 @@ class IntentRouter:
                 logger.info(f"[INTENT ROUTER] Intent: CHAT ({reason})")
                 return IntentResult(intent="chat", confidence=0.95, reason=reason)
 
-        # Short questions (< 12 words) without complex engineering keywords default to CHAT
-        if word_count < 12 and not has_architecture and not (has_comparison and has_decision):
-            reason = "Concise question without multi-agent requirements handled directly by conversational model."
-            logger.info(f"[INTENT ROUTER] Intent: CHAT (Short query: {word_count} words)")
-            return IntentResult(intent="chat", confidence=0.88, reason=reason)
-
-        # 3. LLM Fallback for ambiguous boundary queries
-        try:
-            prompt = f"{ROUTER_PROMPT}\n\nUser Message: \"{cleaned}\""
-            raw_response = await asyncio.wait_for(
-                llm_client.generate_content(
-                    prompt=prompt,
-                    temperature=0.0,
-                    timeout=3.5,
-                ),
-                timeout=3.5,
+        # Context-aware conversational follow-up resolution
+        if context and word_count < 25:
+            followup_cues = (
+                "what am i", "what is he", "what is she", "what are we", "what is it",
+                "who is", "who am i", "what project", "what startup", "what name",
+                "what was", "what did", "tell me more", "how about", "why that", "is it", "can it"
             )
-            if raw_response and not raw_response.startswith("Mock response"):
-                # Clean code fence if present
-                clean_json = raw_response.strip()
-                if clean_json.startswith("```"):
-                    clean_json = re.sub(r"^```(?:json)?\n?", "", clean_json)
-                    clean_json = re.sub(r"\n?```$", "", clean_json)
-                data = json.loads(clean_json)
-                intent_val = data.get("intent", "chat").lower()
-                if intent_val not in ("chat", "solve"):
-                    intent_val = "chat"
-                conf = float(data.get("confidence", 0.85))
-                reason = data.get("reason", "Model classified query complexity.")
-                logger.info(f"[INTENT ROUTER] Intent: {intent_val.upper()} (LLM classified, confidence={conf})")
-                return IntentResult(intent=intent_val, confidence=conf, reason=reason)
-        except Exception as exc:
-            logger.debug(f"[INTENT ROUTER] LLM router fallback skipped: {exc}")
+            has_followup_pronouns = any(
+                re.search(r"\b" + re.escape(w) + r"\b", cleaned.lower())
+                for w in ("it", "that", "this", "he", "she", "they", "him", "her", "my", "i", "we")
+            )
+            if any(c in cleaned.lower() for c in followup_cues) or has_followup_pronouns:
+                reason = "Conversational follow-up evaluated within existing conversation context."
+                logger.info(f"[INTENT ROUTER] Intent: CHAT ({reason})")
+                return IntentResult(intent="chat", confidence=0.97, reason=reason)
 
-        # Default fallback: favor CHAT for simple safety, avoiding running 12 agents unnecessarily
+        # 3. Grounding in Authoritative Core Router
+        decision = route_request(cleaned, context=context)
+
+        # 4. LLM Classification fallback for boundary queries
+        # CRITICAL: On ANY LLM failure (HTTP 429 quota exhaustion, timeout, provider error),
+        # NEVER downgrade a complex query to chat. The authoritative core router decision is strictly enforced.
+        try:
+            llm_result = await self._classify_with_llm(cleaned)
+            if llm_result:
+                # If LLM suggests chat but core router classified query as COMPLEX, core router wins
+                if llm_result.intent == "chat" and decision.route == ROUTE_COMPLEX:
+                    logger.warning(
+                        "[INTENT ROUTER] LLM suggested 'chat' but authoritative core router "
+                        "classified query as COMPLEX. Preserving SOLVE."
+                    )
+                    return IntentResult(
+                        intent="solve",
+                        confidence=decision.confidence,
+                        reason=f"Core router: {decision.reasoning}",
+                    )
+                logger.info(f"[INTENT ROUTER] Intent: {llm_result.intent.upper()} (LLM classified, confidence={llm_result.confidence})")
+                return llm_result
+        except Exception as exc:
+            logger.warning(
+                f"[INTENT ROUTER] LLM classifier failure / quota error ({exc}). "
+                f"Grounding with authoritative core router."
+            )
+
+        # 5. Authoritative simple/complex decision from backend.core.router
+        if decision.route == ROUTE_COMPLEX:
+            logger.info(f"[INTENT ROUTER] Intent: SOLVE (Core router: {decision.reasoning})")
+            return IntentResult(
+                intent="solve",
+                confidence=decision.confidence,
+                reason=f"Core router: {decision.reasoning}",
+            )
+
+        if decision.route == ROUTE_SIMPLE:
+            logger.info(f"[INTENT ROUTER] Intent: CHAT (Core router: {decision.reasoning})")
+            return IntentResult(
+                intent="chat",
+                confidence=decision.confidence,
+                reason=f"Core router: {decision.reasoning}",
+            )
+
         reason = "Default conversational path for standard query."
         logger.info(f"[INTENT ROUTER] Intent: CHAT (Default fallback)")
         return IntentResult(intent="chat", confidence=0.80, reason=reason)

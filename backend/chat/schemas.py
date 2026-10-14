@@ -20,6 +20,16 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Optional session token for guest users")
     # For backward compatibility if callers pass 'problem'
     problem: Optional[str] = Field(None, description="Alias for message")
+    # Optional mode override ('chat', 'solve', 'ask', 'research', 'agent')
+    mode: Optional[str] = Field(None, description="Optional explicit mode requested by client")
+    # Unique execution request ID for live event tracking
+    request_id: Optional[str] = Field(None, description="Unique execution request ID for live event tracking")
+    # Domain-Aware Reasoning: explicit user selection from the UI
+    category: Optional[str] = Field(
+        None,
+        description="Explicit domain lens: 'AUTO', 'BUSINESS', 'PERSONAL', or 'SOFTWARE'. "
+                    "None behaves as AUTO.",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -27,9 +37,14 @@ class ChatResponse(BaseModel):
     mode: Literal["chat", "solve"]
     conversation_id: str
     message: str
+    title: Optional[str] = Field(None, description="Intelligent AI-generated conversation title")
+    request_id: Optional[str] = None
     intent_result: Optional[IntentResult] = None
     memories_used: List[str] = Field(default_factory=list)
     request_status: str = "completed"
+    # Domain-aware fields
+    domain_category: Optional[str] = None
+    resolved_domain: Optional[str] = None
     # Fields to maintain 100% compatibility with existing solve UI / consumers
     final_synthesized_answer: Optional[str] = None
     final_answer: Optional[str] = None

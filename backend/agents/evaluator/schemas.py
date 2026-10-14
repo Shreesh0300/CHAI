@@ -129,8 +129,6 @@ class EvaluatorOutput(BaseModel):
     missing_evidence: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
 
-    status: Optional[str] = Field("completed", description="Status of the evaluation.")
-    agent: Optional[str] = Field("evaluator", description="Agent name.")
     evaluator_result: Optional[EvaluatorResult] = Field(None, description="Full canonical Evaluator analysis.")
 
     @classmethod
@@ -186,3 +184,8 @@ class EvaluatorOutput(BaseModel):
             recommendations=recs,
             evaluator_result=result,
         )
+
+    @property
+    def status(self) -> Any:
+        """Returns the execution status from the underlying EvaluatorResult."""
+        return getattr(self.evaluator_result, "status", "completed")

@@ -204,9 +204,21 @@ export const authClient = {
     } catch {
       // ignore
     }
+    // Also sign out from Supabase
+    try {
+      const { getSupabaseClient } = await import('./supabase');
+      const client = getSupabaseClient();
+      if (client) {
+        await client.auth.signOut();
+      }
+    } catch {
+      // ignore
+    }
     setStoredUser(null);
     try {
       localStorage.removeItem('chai_access_token');
+      localStorage.removeItem('chai_active_conversation_id');
+      localStorage.removeItem('chai_last_path');
     } catch {}
     return { data: true, error: null };
   },

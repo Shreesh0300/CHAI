@@ -305,6 +305,7 @@ class MemoryStore:
         user_id: str,
         role: str,
         content: str,
+        extra_data: Optional[Dict[str, Any]] = None,
     ) -> ChatMessageRecord:
         """Appends a message to PostgreSQL conversation history and cache."""
         cleaned_content = sanitize_sensitive_data(content)
@@ -313,6 +314,7 @@ class MemoryStore:
             user_id=user_id,
             role=role,
             content=cleaned_content,
+            extra_data=extra_data or {},
         )
 
         async with self._lock:
@@ -330,6 +332,7 @@ class MemoryStore:
                     role=role,
                     content=cleaned_content,
                     message_id=msg.id,
+                    extra_data=extra_data,
                 )
                 msg.id = db_msg.id
                 msg.created_at = db_msg.created_at
@@ -364,6 +367,7 @@ class MemoryStore:
                             user_id=m.user_id,
                             role=m.role,
                             content=m.content,
+                            extra_data=getattr(m, "extra_data", {}) or {},
                             created_at=m.created_at,
                         )
                         for m in db_msgs
@@ -382,12 +386,23 @@ class MemoryStore:
                     return []
             return cached_msgs[-limit:]
 
-    async def list_user_conversations(self, user_id: str) -> List[ConversationRecord]:
+    async def list_user_conversations(
+        self,
+        user_id: str,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ConversationRecord]:
         """Returns all conversations owned strictly by user_id from PostgreSQL."""
         async with self._lock:
             try:
                 await self._ensure_db()
-                db_convos = await ConversationRepository.list_conversations(user_id=user_id)
+                db_convos = await ConversationRepository.list_conversations(
+                    user_id=user_id,
+                    search=search,
+                    limit=limit,
+                    offset=offset,
+                )
                 return [
                     ConversationRecord(
                         id=c.id,
@@ -401,6 +416,43 @@ class MemoryStore:
             except Exception as exc:
                 logger.error(f"[MEMORY STORE] Failed to list conversations from PostgreSQL: {exc}")
                 return []
+
+    async def get_conversation(
+        self,
+        user_id: str,
+        conversation_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves a conversation and all its messages, enforcing user isolation."""
+        async with self._lock:
+            try:
+                await self._ensure_db()
+                return await ConversationRepository.get_conversation_with_messages(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
+            except Exception as exc:
+                logger.error(f"[MEMORY STORE] Failed to get conversation from PostgreSQL: {exc}")
+                return None
+
+    async def delete_conversation(
+        self,
+        user_id: str,
+        conversation_id: str,
+    ) -> bool:
+        """Deletes conversation and associated messages from storage."""
+        async with self._lock:
+            if conversation_id in self._messages_cache:
+                del self._messages_cache[conversation_id]
+            try:
+                await self._ensure_db()
+                return await ConversationRepository.delete_conversation(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
+            except Exception as exc:
+                logger.error(f"[MEMORY STORE] Failed to delete conversation: {exc}")
+                return False
+
 
 
 # Global singleton instance

@@ -232,29 +232,6 @@ class EngineerResult(BaseModel):
     assumptions: List[str] = Field(default_factory=list, description="Assumptions made by the agent.")
     missing_information: List[str] = Field(default_factory=list, description="Information that would materially affect the architecture.")
 
-    @model_validator(mode="before")
-    @classmethod
-    def clean_null_lists(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            for k, v in list(data.items()):
-                if v is None and k in {
-                    "functional_requirements",
-                    "non_functional_requirements",
-                    "components",
-                    "technology_recommendations",
-                    "data_flow",
-                    "api_design",
-                    "integrations",
-                    "implementation_plan",
-                    "technical_risks",
-                    "constraints",
-                    "tradeoffs",
-                    "assumptions",
-                    "missing_information",
-                }:
-                    data[k] = []
-        return data
-
 
 # ---------------------------------------------------------------------------
 # Backward-compatible alias
@@ -315,3 +292,8 @@ class EngineerOutput(BaseModel):
             implementation_plan=plan_list,
             engineer_result=result,
         )
+
+    @property
+    def status(self) -> Any:
+        """Returns the execution status from the underlying EngineerResult."""
+        return getattr(self.engineer_result, "status", "completed")

@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
+from backend.core.domain_lenses import apply_domain_lens, normalize_domain
 from backend.agents.reliability_monitor.prompts import (
     SYSTEM_PROMPT,
     REFERENCE_CONTEXT_HEADER,
@@ -89,6 +90,7 @@ class ReliabilityMonitorAgent:
         self,
         problem: str,
         context: Optional[dict] = None,
+        domain: Optional[str] = None,
     ) -> ReliabilityMonitorResult:
         """Assess the reliability of the CHAI workflow outcome.
 
@@ -99,6 +101,8 @@ class ReliabilityMonitorAgent:
         context:
             Collected workflow state, agent outputs, evaluator findings,
             conflict resolutions, and the synthesized final answer.
+        domain:
+            Optional resolved domain string ("business", "personal", "software").
 
         Returns
         -------
@@ -115,6 +119,15 @@ class ReliabilityMonitorAgent:
             logger.warning("Reliability Monitor Agent: received empty problem.")
             return self._make_failed_output("Empty problem provided. Cannot perform reliability monitoring.")
 
+        # ---- Resolve Domain Lens ----
+        resolved_domain = (
+            domain
+            or (context.get("domain") if isinstance(context, dict) else None)
+            or (context.get("domain_category") if isinstance(context, dict) else None)
+            or (context.get("resolved_domain") if isinstance(context, dict) else None)
+        )
+        effective_system_prompt = apply_domain_lens(self.system_prompt, "reliability_monitor", resolved_domain)
+
         # ---- Build LLM prompt ----
         user_prompt = self._build_user_prompt(problem, context)
 
@@ -124,13 +137,13 @@ class ReliabilityMonitorAgent:
             try:
                 response_text = await llm_client.generate_content(
                     prompt=user_prompt,
-                    system_instruction=self.system_prompt,
+                    system_instruction=effective_system_prompt,
                 )
 
                 # Handle mock mode (API key not configured)
                 if "Mock response" in response_text:
                     logger.info("Reliability Monitor Agent: LLM returned mock response (no API key).")
-                    return self._make_mock_output(problem, context)
+                    return self._make_mock_output(problem, context, domain=resolved_domain)
 
                 # Parse and validate
                 result = self._parse_response(response_text)
@@ -498,8 +511,17 @@ class ReliabilityMonitorAgent:
         cls,
         problem: str,
         context: Optional[dict] = None,
+        domain: Optional[str] = None,
     ) -> ReliabilityMonitorResult:
         """Return a deterministic, explainable mock result when no API key is configured."""
+        resolved_domain = (
+            domain
+            or (context.get("domain") if isinstance(context, dict) else None)
+            or (context.get("domain_category") if isinstance(context, dict) else None)
+            or (context.get("resolved_domain") if isinstance(context, dict) else None)
+        )
+        canonical_domain = normalize_domain(resolved_domain)
+
         source = (
             context.get("all_outputs")
             if (context and isinstance(context.get("all_outputs"), dict))
@@ -796,23 +818,30 @@ class ReliabilityMonitorAgent:
             rec = "Output is well-supported and verified. Proceed with delivery."
         elif score >= 0.55 and not (has_failed_dim and score < 0.60):
             level = ReliabilityLevel.MEDIUM
-            if missing_info and (len(missing_info) >= 2 or any("jurisdiction" in m.lower() or "compliance" in m.lower() for m in missing_info)):
+            has_blocking_compliance = any(
+                "jurisdiction" in m.lower() or "compliance" in m.lower() or "medical" in m.lower() or "legal liability" in m.lower()
+                for m in missing_info
+            )
+            if missing_info and has_blocking_compliance:
                 action = ReliabilityAction.REQUEST_MORE_INFORMATION
-                rec = "Request clarification from user on critical missing variables before finalizing architecture."
+                rec = "Request clarification from user on critical regulatory or compliance variables."
             elif unresolved_list:
                 action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
                 rec = "Deliver output with explicit disclosure of unresolved trade-offs."
             else:
                 action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
-                rec = "Deliver output with explicit caveats and limitation disclosure."
+                rec = "Deliver output with explicit caveats and provisional decision guidance."
         else:
             level = ReliabilityLevel.LOW
             if score < 0.45 or (has_failed_dim and "security" in failed_agents):
                 action = ReliabilityAction.BLOCK_OUTPUT
                 rec = "Block delivery: severe reliability or safety/security failure."
-            elif missing_info:
+            elif missing_info and any(
+                "jurisdiction" in m.lower() or "compliance" in m.lower() or "medical" in m.lower()
+                for m in missing_info
+            ):
                 action = ReliabilityAction.REQUEST_MORE_INFORMATION
-                rec = "Missing information critically impedes reliable decision. Request additional context."
+                rec = "Missing regulatory information critically impedes reliable decision. Request additional context."
             else:
                 action = ReliabilityAction.PROCEED_WITH_LIMITATIONS
                 rec = "Deliver output with prominent warnings regarding low reliability."

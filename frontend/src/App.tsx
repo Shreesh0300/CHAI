@@ -5,10 +5,30 @@ import { AuthForm } from './components/auth-form';
 import { AssistantSpeech } from './components/assistant-speech';
 import { useSession, type UserSession } from './lib/auth-client';
 import { handleSupabaseRedirectSession, subscribeToSupabaseAuth } from './lib/supabase';
+import { getLogoPalette, updateBrowserFavicon } from './lib/brand-palette';
+
+const LAST_PATH_KEY = 'chai_last_path';
+const LAST_CONVERSATION_KEY = 'chai_active_conversation_id';
 
 export default function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => {
-    return typeof window !== 'undefined' ? window.location.pathname || '/' : '/';
+    if (typeof window === 'undefined') return '/';
+    // On reload, check if user has a stored session and a saved path
+    const savedPath = localStorage.getItem(LAST_PATH_KEY);
+    const hasUser = !!localStorage.getItem('chai_auth_user');
+    const urlPath = window.location.pathname || '/';
+
+    // If URL has a meaningful path (not just /), use it
+    if (urlPath !== '/' && urlPath.length > 1) return urlPath;
+
+    // If user is logged in and was previously on workspace, restore that
+    if (hasUser && savedPath && (savedPath.includes('workspace') || savedPath.includes('guest'))) {
+      // Update browser URL to match
+      window.history.replaceState({}, '', savedPath);
+      return savedPath;
+    }
+
+    return urlPath;
   });
 
   const { data: sessionData } = useSession();
@@ -46,36 +66,55 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const getTheme = () => localStorage.getItem('chai-theme') || 'dark';
+    const getAccent = () => localStorage.getItem('chai-accent') || 'violet';
     const applyTheme = (theme: string) => {
       const root = document.documentElement;
       const isDark = theme !== 'light';
       root.classList.toggle('dark', isDark);
       root.classList.toggle('light', !isDark);
+      const palette = getLogoPalette(getAccent(), isDark);
+      updateBrowserFavicon(palette);
     };
 
     applyTheme(getTheme());
 
     // Initialize accent color
-    const savedAccent = localStorage.getItem('chai-accent') || 'violet';
+    const savedAccent = getAccent();
     const accentSwatches: Record<string, string> = {
       violet: '#7064e8',
       blue: '#3979df',
       teal: '#148b7e',
       rose: '#ce5478',
       amber: '#c86d1a',
+      green: '#10b981',
+      red: '#ef4444',
+      monochrome: '#71717a',
     };
     document.documentElement.style.setProperty(
       '--profile-accent-color',
       accentSwatches[savedAccent] || '#7064e8'
     );
+    const initialIsDark = getTheme() !== 'light';
+    updateBrowserFavicon(getLogoPalette(savedAccent, initialIsDark));
 
     const handleThemeChange = (e: Event) => {
       const custom = e as CustomEvent<string>;
       applyTheme(custom.detail || getTheme());
     };
 
+    const handleAccentChange = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      const accent = custom.detail || getAccent();
+      const isDark = getTheme() !== 'light';
+      updateBrowserFavicon(getLogoPalette(accent, isDark));
+    };
+
     window.addEventListener('chai-theme-change', handleThemeChange);
-    return () => window.removeEventListener('chai-theme-change', handleThemeChange);
+    window.addEventListener('chai-accent-change', handleAccentChange);
+    return () => {
+      window.removeEventListener('chai-theme-change', handleThemeChange);
+      window.removeEventListener('chai-accent-change', handleAccentChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -89,7 +128,9 @@ export default function App() {
       const custom = e as CustomEvent<UserSession | null>;
       setCurrentUser(custom.detail || null);
       if (!custom.detail) {
-        // Logged out -> go to cover page
+        // Logged out -> go to cover page and clear persisted state
+        localStorage.removeItem(LAST_PATH_KEY);
+        localStorage.removeItem(LAST_CONVERSATION_KEY);
         window.history.pushState({}, '', '/');
         setCurrentPath('/');
       }
@@ -109,6 +150,8 @@ export default function App() {
   const navigateTo = (path: string) => {
     window.history.pushState({}, '', path);
     setCurrentPath(path);
+    // Persist path so reload goes back here instead of home
+    localStorage.setItem(LAST_PATH_KEY, path);
     window.dispatchEvent(new CustomEvent('chai-navigate', { detail: path }));
   };
 

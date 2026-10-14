@@ -146,3 +146,8 @@ class GuardianOutput(BaseModel):
             recommended_mitigations=mitigations,
             guardian_result=result,
         )
+
+    @property
+    def status(self) -> Any:
+        """Returns the execution status from the underlying GuardianResult."""
+        return getattr(self.guardian_result, "status", "completed")

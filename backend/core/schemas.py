@@ -2,7 +2,10 @@
 Schemas for CHAI core coordinator, routing, execution state, and API models.
 """
 from typing import List, Optional, Any, Dict, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+
+# Canonical domain category type – four explicit choices
+DomainCategory = Literal["AUTO", "BUSINESS", "PERSONAL", "SOFTWARE"]
 
 from backend.core.state import (
     CHAIState,
@@ -49,25 +52,14 @@ class SolveRequest(BaseModel):
     context: Optional[str] = Field(None, description="Optional environmental or domain context.")
     selected_agents: Optional[List[str]] = Field(default=None, description="Optional override list of agents to execute.")
     mode: Optional[str] = Field(default="ask", description="UI interaction mode: 'ask', 'research', or 'agent'.")
-    language: Optional[str] = Field(
+    conversation_id: Optional[str] = Field(None, description="Optional conversation/thread identifier.")
+    session_id: Optional[str] = Field(None, description="Optional session identifier for isolation.")
+    request_id: Optional[str] = Field(None, description="Unique execution request ID.")
+    category: Optional[DomainCategory] = Field(
         default=None,
-        description="Optional ISO language code ('en', 'hi', 'kn'). Auto-detected if omitted.",
+        description="Explicit domain lens selected by the user: 'AUTO' (let CHAI decide), "
+                    "'BUSINESS', 'PERSONAL', or 'SOFTWARE'. None behaves as AUTO.",
     )
-    model: Optional[str] = Field(
-        default="Auto",
-        description="Selected model domain/mode: 'Auto', 'Business', 'Personal', 'Software'.",
-    )
-
-    @field_validator("language")
-    @classmethod
-    def validate_language(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        from backend.core.language import canonicalize_language
-        canon = canonicalize_language(v)
-        if canon is None:
-            raise ValueError(f"Unsupported language '{v}'. Supported languages are: 'en', 'hi', 'kn', 'sa'.")
-        return canon
 
 
 class CHAIExecutionResult(BaseModel):
@@ -100,6 +92,8 @@ class CHAIExecutionResult(BaseModel):
     execution_trace: List[Dict[str, Any]] = Field(default_factory=list)
     final_answer: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    domain_category: Optional[str] = None
+    resolved_domain: Optional[str] = None
 
 
 class FinalResponse(BaseModel):
@@ -127,8 +121,20 @@ class FinalResponse(BaseModel):
     execution_trace: List[Dict[str, Any]] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     limitations: Optional[List[str]] = None
-    language: str = Field(default="en", description="Resolved ISO language code ('en', 'hi', 'kn').")
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    conversation_id: Optional[str] = None
+    domain_category: Optional[str] = Field(
+        default=None,
+        description="Resolved domain lens active for this response (e.g. 'business_strategy').",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Intelligent AI-generated conversation title.",
+    )
+    resolved_domain: Optional[str] = Field(
+        default=None,
+        description="Canonical resolved domain active for this response ('business' | 'personal' | 'software' | 'general').",
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if self.status is None:
@@ -162,6 +168,7 @@ __all__ = [
     "RouteType",
     "ComplexityType",
     "ExecutionStatus",
+    "DomainCategory",
     "RouteDecision",
     "AgentExecutionStatus",
     "SolveRequest",

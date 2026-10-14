@@ -28,8 +28,20 @@ def sync_conversations(email: Optional[str] = None, full_name: Optional[str] = N
 
     # 1. Sync User Profile if provided
     if email:
+        user_id = str(uuid.uuid4())
+        # Try user_profiles first (unrestricted TEXT primary key)
         try:
-            user_id = str(uuid.uuid4())
+            supabase.table("user_profiles").upsert({
+                "user_id": user_id,
+                "email": email,
+                "name": full_name or email.split("@")[0],
+            }).execute()
+            print(f"[Sync] user_profiles synced for {email}")
+        except Exception as e:
+            logger.debug(f"[Sync] user_profiles table not available: {e}")
+
+        # Also try public.profiles (linked to auth.users)
+        try:
             p_res = supabase.table("profiles").upsert({
                 "id": user_id,
                 "email": email,
@@ -37,7 +49,7 @@ def sync_conversations(email: Optional[str] = None, full_name: Optional[str] = N
             }).execute()
             print(f"[Sync] Profile synced for {email}: {p_res.data}")
         except Exception as e:
-            print(f"[Sync] Could not sync profile: {e}")
+            logger.debug(f"[Sync] profiles table upsert: {e}")
 
     # 2. Sync Conversations from history_cache.json
     if not HISTORY_FILE.exists():
@@ -51,37 +63,71 @@ def sync_conversations(email: Optional[str] = None, full_name: Optional[str] = N
         return False
 
     print(f"[Sync] Found {len(conversations)} conversations in local cache. Attempting sync to Supabase...")
-    success_count = 0
-    fail_count = 0
+    synced_convs = 0
+    synced_solves = 0
 
     for item in conversations:
-        problem = item.get("prompt") or item.get("title")
+        conv_id = item.get("id") or str(uuid.uuid4())
+        problem = item.get("prompt") or item.get("title") or "Conversation"
         answer = item.get("answer") or ""
         created_at = item.get("created_at")
+        user_id = item.get("user_id") or "guest_default"
+        title = item.get("title") or problem[:50]
+        mode = item.get("mode") or "ask"
+        layout = item.get("layout") or "chat"
 
-        payload = {
+        # A. Sync to conversations table
+        try:
+            conv_payload = {
+                "id": conv_id,
+                "user_id": user_id,
+                "title": title,
+                "mode": mode,
+                "layout": layout,
+            }
+            if created_at:
+                conv_payload["created_at"] = created_at
+                conv_payload["updated_at"] = created_at
+
+            c_res = supabase.table("conversations").upsert(conv_payload).execute()
+            if c_res.data:
+                # Sync messages for this conversation
+                msgs = item.get("messages", [])
+                for idx, m in enumerate(msgs):
+                    msg_id = m.get("id") or f"{conv_id}_{idx}"
+                    supabase.table("messages").upsert({
+                        "id": msg_id,
+                        "conversation_id": conv_id,
+                        "user_id": user_id,
+                        "role": m.get("role") or "user",
+                        "content": m.get("content") or "",
+                        "attachments": [],
+                    }).execute()
+                synced_convs += 1
+                print(f" [OK] Synced thread: '{title[:45]}...' ({len(msgs)} messages)")
+        except Exception as e:
+            logger.debug(f" [conversations table] Note: {e}")
+
+        # B. Sync to solve_requests table
+        solve_payload = {
             "problem": problem,
             "status": "completed",
             "selected_agents": ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"],
             "final_answer": answer,
         }
         if created_at:
-            payload["created_at"] = created_at
+            solve_payload["created_at"] = created_at
 
         try:
-            res = supabase.table("solve_requests").insert(payload).execute()
+            res = supabase.table("solve_requests").insert(solve_payload).execute()
             if res.data:
-                success_count += 1
-                print(f" [OK] Synced: {problem[:50]}...")
-            else:
-                fail_count += 1
-                print(f" [FAIL] Insert returned empty for: {problem[:50]}")
+                synced_solves += 1
+                print(f" [OK] Synced solve_request: '{problem[:45]}...'")
         except Exception as e:
-            fail_count += 1
-            print(f" [RLS/PERMISSION ERROR] Could not insert '{problem[:40]}...': {e}")
+            logger.debug(f" [solve_requests table] Note: {e}")
 
-    print(f"[Sync Complete] Successfully synced: {success_count}, Failed: {fail_count}")
-    return success_count > 0
+    print(f"\n[Sync Summary] Threads synced: {synced_convs}/{len(conversations)}, Solves synced: {synced_solves}/{len(conversations)}")
+    return (synced_convs + synced_solves) > 0
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from backend.agents.researcher.prompts import (
     SYSTEM_PROMPT,
     build_research_prompt,
 )
+from backend.core.domain_lenses import apply_domain_lens
 from backend.shared.llm_client import (
     get_gemini_chat_model,
     get_gemini_api_key,
@@ -69,6 +70,7 @@ class ResearcherAgent:
         context: Optional[str] = None,
         acquired_information: Optional[List[Any]] = None,
         sources: Optional[List[Union[Source, dict]]] = None,
+        domain: Optional[str] = None,
     ) -> ResearchResult:
         """
         Executes the problem analysis workflow.
@@ -133,8 +135,9 @@ class ResearcherAgent:
             acquired_information=acquired_information,
             sources=parsed_sources,
         )
+        effective_system_prompt = apply_domain_lens(SYSTEM_PROMPT, "researcher", domain)
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=effective_system_prompt),
             HumanMessage(content=user_prompt),
         ]
 

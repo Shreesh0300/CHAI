@@ -28,7 +28,7 @@ import { signInWithSupabaseOAuth, fetchUserProfile, upsertUserProfile } from "@/
 import { cn } from "@/lib/utils"
 
 type ThemeChoice = "system" | "light" | "dark"
-type AccentChoice = "violet" | "blue" | "teal" | "rose" | "amber"
+export type AccentChoice = "violet" | "blue" | "teal" | "rose" | "amber" | "green" | "red" | "monochrome"
 
 export type ProfileMenuUser = {
   id?: string
@@ -38,7 +38,7 @@ export type ProfileMenuUser = {
   provider?: 'email' | 'google' | 'github' | 'guest'
 }
 
-const ACCENTS: Record<AccentChoice, { label: string; swatch: string; light: string; dark: string }> = {
+export const ACCENTS: Record<AccentChoice, { label: string; swatch: string; light: string; dark: string }> = {
   violet: {
     label: "Violet",
     swatch: "#7064e8",
@@ -57,17 +57,35 @@ const ACCENTS: Record<AccentChoice, { label: string; swatch: string; light: stri
     light: "oklch(0.5 0.13 188)",
     dark: "oklch(0.75 0.12 190)",
   },
+  green: {
+    label: "Green",
+    swatch: "#10b981",
+    light: "oklch(0.52 0.16 160)",
+    dark: "oklch(0.76 0.14 160)",
+  },
+  amber: {
+    label: "Amber",
+    swatch: "#c86d1a",
+    light: "oklch(0.56 0.15 73)",
+    dark: "oklch(0.8 0.12 79)",
+  },
   rose: {
     label: "Rose",
     swatch: "#ce5478",
     light: "oklch(0.5 0.17 8)",
     dark: "oklch(0.73 0.14 8)",
   },
-  amber: {
-    label: "Amber",
-    swatch: "#a96a09",
-    light: "oklch(0.56 0.15 73)",
-    dark: "oklch(0.8 0.12 79)",
+  red: {
+    label: "Red",
+    swatch: "#ef4444",
+    light: "oklch(0.52 0.22 25)",
+    dark: "oklch(0.72 0.18 25)",
+  },
+  monochrome: {
+    label: "Monochrome",
+    swatch: "#64748b",
+    light: "oklch(0.45 0.02 260)",
+    dark: "oklch(0.75 0.02 260)",
   },
 }
 

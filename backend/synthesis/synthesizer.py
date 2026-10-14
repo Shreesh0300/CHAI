@@ -24,7 +24,7 @@ from backend.agents.guardian.schemas import GuardianResult, GuardianOutput
 from backend.agents.security.models import SecurityResult
 from backend.agents.evaluator.schemas import EvaluatorResult, EvaluatorOutput
 from backend.core.contracts import SynthesisResult, SynthesizerInputContract
-from backend.core.language import LANGUAGE_NAMES, DEFAULT_LANGUAGE
+from backend.core.domain_lenses import normalize_domain
 from backend.shared.llm_client import llm_client, get_gemini_api_key
 from backend.shared.logger import get_logger
 
@@ -49,6 +49,7 @@ class Synthesizer:
         sources: Optional[List[str]] = None,
         conflicts: Optional[List[str]] = None,
         all_agent_results: Optional[Dict[str, Any]] = None,
+        domain: Optional[str] = None,
     ) -> SynthesisResult:
         """Alias for synthesize."""
         return await self.synthesize(
@@ -62,6 +63,7 @@ class Synthesizer:
             sources=sources,
             conflicts=conflicts,
             all_agent_results=all_agent_results,
+            domain=domain,
         )
 
     async def synthesize(
@@ -76,26 +78,16 @@ class Synthesizer:
         sources: Optional[List[str]] = None,
         conflicts: Optional[List[str]] = None,
         all_agent_results: Optional[Dict[str, Any]] = None,
-        agent_outputs: Optional[Dict[str, Any]] = None,
-        detected_conflicts: Optional[List[str]] = None,
-        language: str = DEFAULT_LANGUAGE,
-        limitations: Optional[List[str]] = None,
-        **kwargs,
-    ) -> Union[SynthesisResult, str]:
+        domain: Optional[str] = None,
+    ) -> SynthesisResult:
         """
-        Reconciles findings from all specialized agents into a unified SynthesisResult
-        or localized response text.
+        Reconciles findings from all specialized agents into a unified SynthesisResult.
         """
-        if agent_outputs is not None:
-            return await self._synthesize_multilingual(
-                problem=problem,
-                agent_outputs=agent_outputs,
-                detected_conflicts=detected_conflicts or conflicts or [],
-                language=language,
-                limitations=limitations or [],
-            )
-
-        logger.info(f"Synthesizer: starting cross-agent synthesis for '{problem}'")
+        resolved_domain = domain or (
+            all_agent_results.get("domain") or all_agent_results.get("resolved_domain") or all_agent_results.get("domain_category")
+            if isinstance(all_agent_results, dict) else None
+        )
+        logger.info(f"Synthesizer: starting cross-agent synthesis for '{problem}' (domain={resolved_domain})")
 
         # 1. Normalize representations to dict / model helper
         r_dict = self._to_dict(research)
@@ -216,28 +208,73 @@ class Synthesizer:
             "Based on the comprehensive analysis of our specialized agents:\n"
         ]
 
-        if strategic_thesis:
-            text_sections.append(f"Strategic Thesis:\n{strategic_thesis}\n")
-
-        if arch_overview:
-            text_sections.append(f"Architecture & Technical Design:\n{arch_overview}\n")
-
-        if sec_summary or sec_mitigations:
-            sec_details = sec_summary
-            if sec_mitigations:
-                sec_details += f"\nKey Defenses: {', '.join(sec_mitigations[:3])}"
-            text_sections.append(f"Cybersecurity & Protection:\n{sec_details.strip()}\n")
-
-        if safety_assessment or safety_safeguards:
-            guard_details = safety_assessment or (safety_safeguards[0] if safety_safeguards else "")
-            text_sections.append(f"Safety & Ethical Safeguards:\n{guard_details.strip()}\n")
-
-        if eval_assessment or detected_conflicts:
-            eval_details = eval_assessment
-            if detected_conflicts:
-                conflict_summary = f"Reconciled Conflicts: {'; '.join(detected_conflicts[:2])}"
-                eval_details = f"{eval_details}\n{conflict_summary}".strip()
-            text_sections.append(f"Cross-Agent Evaluation:\n{eval_details.strip()}\n")
+        active_domain = normalize_domain(resolved_domain)
+        if active_domain == "business":
+            if strategic_thesis:
+                text_sections.append(f"Strategic & Commercial Positioning:\n{strategic_thesis}\n")
+            if arch_overview and any(k in problem.lower() for k in ("tech", "software", "api", "platform", "system", "app")):
+                text_sections.append(f"Technical Implementation & Architecture:\n{arch_overview}\n")
+            if priorities or roadmap:
+                r_items = []
+                if priorities:
+                    r_items.append(f"Key Commercial Priorities: {', '.join(priorities[:3])}")
+                if roadmap:
+                    r_items.append(f"12-Month Execution Roadmap: {' → '.join(roadmap[:3])}")
+                text_sections.append(f"Execution & Roadmap:\n{chr(10).join(r_items)}\n")
+            if sec_summary or sec_mitigations or safety_assessment:
+                gov_items = []
+                if sec_summary:
+                    gov_items.append(f"Compliance & Vendor Risk: {sec_summary}")
+                if safety_assessment:
+                    gov_items.append(f"Responsible Business & Ethics: {safety_assessment}")
+                text_sections.append(f"Commercial Risk, Governance & Protection:\n{chr(10).join(gov_items)}\n")
+            if reconciled_tradeoffs:
+                text_sections.append(f"Commercial Trade-offs & Economic Decisions:\n{chr(10).join('- ' + str(t) for t in reconciled_tradeoffs[:3])}\n")
+            if eval_assessment or detected_conflicts:
+                eval_details = eval_assessment
+                if detected_conflicts:
+                    eval_details = f"{eval_details}\nReconciled Conflicts: {'; '.join(detected_conflicts[:2])}".strip()
+                text_sections.append(f"Cross-Agent Validation & Feasibility:\n{eval_details.strip()}\n")
+        elif active_domain == "personal":
+            if strategic_thesis:
+                text_sections.append(f"Personal Context & Decision Framework:\n{strategic_thesis}\n")
+            if priorities or roadmap:
+                p_items = []
+                if priorities:
+                    p_items.append(f"What Matters Most: {', '.join(priorities[:3])}")
+                if roadmap:
+                    p_items.append(f"Practical Next Steps: {' → '.join(roadmap[:3])}")
+                text_sections.append(f"Actionable Next Steps:\n{chr(10).join(p_items)}\n")
+            if safety_assessment or safety_safeguards:
+                guard_details = safety_assessment or (safety_safeguards[0] if safety_safeguards else "")
+                text_sections.append(f"Well-Being & Personal Guardrails:\n{guard_details.strip()}\n")
+            if reconciled_tradeoffs:
+                text_sections.append(f"Personal Trade-offs & Opportunity Costs:\n{chr(10).join('- ' + str(t) for t in reconciled_tradeoffs[:3])}\n")
+            if eval_assessment or detected_conflicts:
+                eval_details = eval_assessment
+                if detected_conflicts:
+                    eval_details = f"{eval_details}\nResolved Conflicts: {'; '.join(detected_conflicts[:2])}".strip()
+                text_sections.append(f"Cross-Agent Evaluation & Alignment:\n{eval_details.strip()}\n")
+        else:
+            # Software engineering or general
+            if strategic_thesis:
+                text_sections.append(f"Strategic Thesis:\n{strategic_thesis}\n")
+            if arch_overview:
+                text_sections.append(f"Architecture & Technical Design:\n{arch_overview}\n")
+            if sec_summary or sec_mitigations:
+                sec_details = sec_summary
+                if sec_mitigations:
+                    sec_details += f"\nKey Defenses: {', '.join(sec_mitigations[:3])}"
+                text_sections.append(f"Cybersecurity & Protection:\n{sec_details.strip()}\n")
+            if safety_assessment or safety_safeguards:
+                guard_details = safety_assessment or (safety_safeguards[0] if safety_safeguards else "")
+                text_sections.append(f"Safety & Ethical Safeguards:\n{guard_details.strip()}\n")
+            if eval_assessment or detected_conflicts:
+                eval_details = eval_assessment
+                if detected_conflicts:
+                    conflict_summary = f"Reconciled Conflicts: {'; '.join(detected_conflicts[:2])}"
+                    eval_details = f"{eval_details}\n{conflict_summary}".strip()
+                text_sections.append(f"Cross-Agent Evaluation:\n{eval_details.strip()}\n")
 
         final_text = "\n".join(text_sections).strip()
 
@@ -252,93 +289,6 @@ class Synthesizer:
             sources=all_sources,
             final_text=final_text,
         )
-
-    async def _synthesize_multilingual(
-        self,
-        problem: str,
-        agent_outputs: Dict[str, Any],
-        detected_conflicts: List[str],
-        language: str,
-        limitations: List[str],
-    ) -> str:
-        lang_code = (language or DEFAULT_LANGUAGE).lower()
-        if lang_code not in LANGUAGE_NAMES:
-            lang_code = DEFAULT_LANGUAGE
-
-        return self._synthesize_fallback(
-            agent_outputs=agent_outputs,
-            detected_conflicts=detected_conflicts,
-            language=lang_code,
-            limitations=limitations,
-        )
-
-    def _synthesize_fallback(
-        self,
-        agent_outputs: Dict[str, Any],
-        detected_conflicts: List[str],
-        language: str,
-        limitations: List[str],
-    ) -> str:
-        strat_text = (
-            agent_outputs.get("strategist", {}).get("strategy")
-            or agent_outputs.get("strategist", {}).get("strategy_overview", "")
-        )
-        arch_text = agent_outputs.get("engineer", {}).get("technical_architecture", "")
-        sec_text = agent_outputs.get("security", {}).get("security_summary", "")
-
-        if language == "kn":
-            res = "ನಮ್ಮ ವಿಶೇಷ ಏಜೆಂಟ್‌ಗಳ ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆಯ ಆಧಾರದ ಮೇಲೆ:\n"
-            if strat_text:
-                res += f"\nತಂತ್ರಗಾರಿಕೆ (Strategy):\n{strat_text}\n"
-            if arch_text:
-                res += f"\nತಾಂತ್ರಿಕ ವಿನ್ಯಾಸ (Architecture):\n{arch_text}\n"
-            if sec_text:
-                res += f"\nಭದ್ರತಾ ಮೌಲ್ಯಮಾಪನ (Security Assessment):\n{sec_text}\n"
-            if detected_conflicts:
-                res += f"\nಗುರುತಿಸಲಾದ ಅಸಂಗತತೆಗಳು ಮತ್ತು ಹೊಂದಾಣಿಕೆಗಳು (Tradeoffs):\n" + "\n".join(
-                    f"- {c}" for c in detected_conflicts
-                ) + "\n"
-            if limitations:
-                res += f"\nಮಿತಿಗಳು (Limitations):\n" + "\n".join(
-                    f"- {l}" for l in limitations
-                ) + "\n"
-            return res
-
-        elif language == "hi":
-            res = "हमारे विशेषज्ञ एजेंटों के व्यापक विश्लेषण के आधार पर:\n"
-            if strat_text:
-                res += f"\nरणनीति (Strategy):\n{strat_text}\n"
-            if arch_text:
-                res += f"\nवास्तुशिल्प (Architecture):\n{arch_text}\n"
-            if sec_text:
-                res += f"\nसुरक्षा मूल्यांकन (Security Assessment):\n{sec_text}\n"
-            if detected_conflicts:
-                res += f"\nपहचानी गई विसंगतियां और व्यापार-बंद (Tradeoffs):\n" + "\n".join(
-                    f"- {c}" for c in detected_conflicts
-                ) + "\n"
-            if limitations:
-                res += f"\nसीमाएं (Limitations):\n" + "\n".join(
-                    f"- {l}" for l in limitations
-                ) + "\n"
-            return res
-
-        else:
-            res = "Based on the comprehensive analysis of our specialized agents:\n"
-            if strat_text:
-                res += f"\nStrategy:\n{strat_text}\n"
-            if arch_text:
-                res += f"\nArchitecture:\n{arch_text}\n"
-            if sec_text:
-                res += f"\nSecurity Assessment:\n{sec_text}\n"
-            if detected_conflicts:
-                res += f"\nIdentified Inconsistencies / Tradeoffs:\n" + "\n".join(
-                    f"- {c}" for c in detected_conflicts
-                ) + "\n"
-            if limitations:
-                res += f"\nLimitations:\n" + "\n".join(
-                    f"- {l}" for l in limitations
-                ) + "\n"
-            return res
 
     def _to_dict(self, obj: Any) -> Dict[str, Any]:
         """Safely normalizes Pydantic models or dicts to a dictionary."""

@@ -14,6 +14,7 @@ from backend.agents.security.prompts import (
     SYSTEM_PROMPT,
     build_security_prompt,
 )
+from backend.core.domain_lenses import apply_domain_lens
 from backend.shared.llm_client import (
     get_gemini_chat_model,
     get_gemini_api_key,
@@ -106,6 +107,7 @@ class SecurityAgent:
         research: Optional[Union[ResearchResult, dict]] = None,
         strategy: Optional[Union[StrategyResult, dict]] = None,
         engineering: Optional[Any] = None,
+        domain: Optional[str] = None,
     ) -> SecurityResult:
         """
         Executes the technical security review workflow.
@@ -117,12 +119,16 @@ class SecurityAgent:
             research: Optional ResearchResult from the Researcher Agent.
             strategy: Optional StrategyResult from the Strategist Agent.
             engineering: Optional engineering design specifications.
+            domain: Optional resolved domain ('business', 'personal', 'software').
 
         Returns:
             SecurityResult with technical security findings or status='failed'.
         """
         # If context is passed as a dict, pull any embedded upstream outputs if not explicitly passed
+        resolved_domain = domain
         if isinstance(context, dict):
+            if resolved_domain is None:
+                resolved_domain = context.get("domain") or context.get("resolved_domain") or context.get("domain_category")
             if engineering is None:
                 engineering = context.get("engineer") or context.get("engineering")
             if research is None:
@@ -186,8 +192,9 @@ class SecurityAgent:
             strategy=parsed_strategy,
             engineering=engineering,
         )
+        effective_system_prompt = apply_domain_lens(SYSTEM_PROMPT, "security", resolved_domain)
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=effective_system_prompt),
             HumanMessage(content=user_prompt),
         ]
 

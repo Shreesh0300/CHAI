@@ -15,7 +15,8 @@ from backend.core.state import (
     register_agent_result,
     get_canonical_agent_result,
 )
-from backend.core.router import route_request, ROUTE_SIMPLE, ROUTE_COMPLEX
+from backend.core.router import route_request, ROUTE_SIMPLE, ROUTE_COMPLEX, resolve_domain
+from backend.core.domain_lenses import normalize_domain
 from backend.information.service import InformationAcquisitionService
 from backend.agents.researcher.models import Source, ResearchResult
 from backend.agents.researcher.agent import ResearcherAgent
@@ -92,14 +93,45 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     rm_agent = instances.get("reliability_monitor") or ReliabilityMonitorAgent()
     validator_agent = instances.get("output_validator") or instances.get("validator") or OutputValidator()
 
+    async def _check_node_cancel_or_pause(state: CHAIState) -> None:
+        req_id = state.get("request_id")
+        if not req_id:
+            return
+        from backend.core.execution_events import execution_event_manager, RequestCancelledException
+        if execution_event_manager.is_cancelled(req_id):
+            raise RequestCancelledException(f"Generation cancelled for request {req_id}", request_id=req_id)
+        await execution_event_manager.wait_if_paused(req_id)
+        if execution_event_manager.is_cancelled(req_id):
+            raise RequestCancelledException(f"Generation cancelled for request {req_id}", request_id=req_id)
+
     # -----------------------------------------------------------------
     # Node 1: Router Node
     # -----------------------------------------------------------------
     def router_node(state: CHAIState) -> Dict[str, Any]:
+        req_id = state.get("request_id")
+        if req_id:
+            from backend.core.execution_events import execution_event_manager, RequestCancelledException
+            if execution_event_manager.is_cancelled(req_id):
+                raise RequestCancelledException(f"Generation cancelled for request {req_id}", request_id=req_id)
         start = time.monotonic()
         problem = state.get("problem", "")
         decision = route_request(problem, state.get("context"))
         duration = (time.monotonic() - start) * 1000
+
+        # Domain Lens resolution (EXPLICIT USER CATEGORY > AUTOMATIC CLASSIFICATION)
+        existing_cat = state.get("domain_category") or state.get("category")
+        domain_cat, domain_inst = resolve_domain(
+            problem=problem,
+            category=existing_cat,
+            context=state.get("context"),
+        )
+        auto_domain = getattr(decision, "domain", "general")
+        if (existing_cat is None or str(existing_cat).strip().upper() in ("AUTO", "NONE", "")) and auto_domain != "general":
+            domain_cat = auto_domain
+            from backend.core.router import _DOMAIN_INSTRUCTIONS
+            domain_inst = _DOMAIN_INSTRUCTIONS.get(auto_domain, _DOMAIN_INSTRUCTIONS.get("general", ""))
+
+        resolved_dom = normalize_domain(domain_cat)
 
         trace_item = {
             "agent": "router",
@@ -112,11 +144,16 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         return {
             "route": decision.route,
             "complexity": decision.complexity,
+            "domain_category": domain_cat,
+            "resolved_domain": resolved_dom,
+            "domain_instruction": domain_inst,
             "completed_agents": state.get("completed_agents", []) + ["router"],
             "execution_trace": state.get("execution_trace", []) + [trace_item],
             "metadata": {
                 **state.get("metadata", {}),
                 "route_decision": decision.model_dump(),
+                "domain_category": domain_cat,
+                "resolved_domain": resolved_dom,
             },
         }
 
@@ -130,6 +167,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 2: Direct Answer Node (Simple Route - NO specialized agents)
     # -----------------------------------------------------------------
     async def direct_answer_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         logger.info(f"DirectAnswerNode: executing direct response for '{problem}' (no specialized agents invoked)")
@@ -181,6 +219,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_status": "completed",
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.warning(f"DirectAnswerNode error: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Direct query handling error: {type(e).__name__}"
@@ -203,6 +244,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node: Information Acquisition Node (Complex Route)
     # -----------------------------------------------------------------
     async def information_acquisition_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         context = state.get("context")
@@ -235,6 +277,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Information acquisition failed: {type(e).__name__}"
             logger.error(f"InformationAcquisitionNode failed: {e}")
@@ -257,6 +302,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 3: Researcher Node
     # -----------------------------------------------------------------
     async def researcher_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         logger.info(f"ResearcherNode: starting analysis for '{problem}'")
@@ -271,15 +317,20 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                     stype = item.get("source_type", "web")
                     sources_objects.append(Source(title=title, url=url, source_type=stype))
 
+            active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
             try:
                 res_output = await res_agent.run(
                     problem=problem,
                     context=state.get("context"),
                     acquired_information=acquired_info,
                     sources=sources_objects or None,
+                    domain=active_domain,
                 )
             except TypeError:
-                res_output = await res_agent.run(problem=problem)
+                try:
+                    res_output = await res_agent.run(problem=problem, domain=active_domain)
+                except TypeError:
+                    res_output = await res_agent.run(problem=problem)
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(res_output, "status", "") == "failed"
 
@@ -326,6 +377,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"ResearcherNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = "Researcher agent failed. Unable to continue the requested analysis."
@@ -359,6 +413,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 4: Strategist Node
     # -----------------------------------------------------------------
     async def strategist_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         strat_input = (
@@ -367,8 +422,12 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         )
         logger.info("StrategistNode: synthesizing strategic priorities and roadmap")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            strat_output = await strat_agent.run(problem=problem, research=strat_input)
+            try:
+                strat_output = await strat_agent.run(problem=problem, research=strat_input, domain=active_domain)
+            except TypeError:
+                strat_output = await strat_agent.run(problem=problem, research=strat_input)
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(strat_output, "status", "") == "failed"
 
@@ -400,6 +459,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"StrategistNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Strategist failed: {type(e).__name__}"
@@ -420,6 +482,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 5: Engineer Node
     # -----------------------------------------------------------------
     async def engineer_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         context_for_eng = {
@@ -428,8 +491,12 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         }
         logger.info("EngineerNode: designing technical solution architecture")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            eng_output = await eng_agent.run(problem=problem, context=context_for_eng)
+            try:
+                eng_output = await eng_agent.run(problem=problem, context=context_for_eng, domain=active_domain)
+            except TypeError:
+                eng_output = await eng_agent.run(problem=problem, context=context_for_eng)
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(eng_output, "status", "") == "failed"
 
@@ -461,6 +528,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"EngineerNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Engineer failed: {type(e).__name__}"
@@ -481,6 +551,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 6: Guardian Node
     # -----------------------------------------------------------------
     async def guardian_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         context_for_guardian = {
@@ -490,8 +561,12 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         }
         logger.info("GuardianNode: assessing safety, ethics, and privacy guardrails")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            guard_output = await guard_agent.run(problem=problem, context=context_for_guardian)
+            try:
+                guard_output = await guard_agent.run(problem=problem, context=context_for_guardian, domain=active_domain)
+            except TypeError:
+                guard_output = await guard_agent.run(problem=problem, context=context_for_guardian)
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(guard_output, "status", "") == "failed"
 
@@ -523,6 +598,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"GuardianNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Guardian failed: {type(e).__name__}"
@@ -543,6 +621,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 7: Security Node
     # -----------------------------------------------------------------
     async def security_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         sec_res = get_canonical_agent_result(state, "researcher")
@@ -550,13 +629,23 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         sec_eng = get_canonical_agent_result(state, "engineer")
         logger.info("SecurityNode: reviewing technical security attack surfaces and mitigations")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            sec_output = await sec_agent.run(
-                problem=problem,
-                research=sec_res,
-                strategy=sec_strat,
-                engineering=sec_eng,
-            )
+            try:
+                sec_output = await sec_agent.run(
+                    problem=problem,
+                    research=sec_res,
+                    strategy=sec_strat,
+                    engineering=sec_eng,
+                    domain=active_domain,
+                )
+            except TypeError:
+                sec_output = await sec_agent.run(
+                    problem=problem,
+                    research=sec_res,
+                    strategy=sec_strat,
+                    engineering=sec_eng,
+                )
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(sec_output, "status", "") == "failed"
 
@@ -588,6 +677,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"SecurityNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Security failed: {type(e).__name__}"
@@ -608,13 +700,18 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 8: Evaluator Node
     # -----------------------------------------------------------------
     async def evaluator_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         context_for_eval = {"all_outputs": state.get("agent_outputs", {})}
         logger.info("EvaluatorNode: cross-evaluating consistency and requirement coverage")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            eval_output = await eval_agent.run(problem=problem, context=context_for_eval)
+            try:
+                eval_output = await eval_agent.run(problem=problem, context=context_for_eval, domain=active_domain)
+            except TypeError:
+                eval_output = await eval_agent.run(problem=problem, context=context_for_eval)
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(eval_output, "status", "") == "failed"
 
@@ -648,6 +745,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"EvaluatorNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Evaluator failed: {type(e).__name__}"
@@ -668,16 +768,21 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 9: Conflict Resolver Node
     # -----------------------------------------------------------------
     async def conflict_resolver_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         context_for_cr = {"all_outputs": state.get("agent_outputs", {})}
         logger.info("ConflictResolverNode: resolving cross-agent contradictions and tradeoffs")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
             try:
-                cr_output = await cr_agent.run(problem, context=context_for_cr)
+                cr_output = await cr_agent.run(problem, context=context_for_cr, domain=active_domain)
             except TypeError:
-                cr_output = await cr_agent.run(problem)
+                try:
+                    cr_output = await cr_agent.run(problem, context=context_for_cr)
+                except TypeError:
+                    cr_output = await cr_agent.run(problem)
 
             duration = (time.monotonic() - start) * 1000
             is_failed = getattr(cr_output, "status", "") == "failed"
@@ -710,6 +815,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"ConflictResolverNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Conflict Resolver failed: {type(e).__name__}"
@@ -730,6 +838,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 10: Synthesizer Node
     # -----------------------------------------------------------------
     async def synthesizer_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         logger.info(f"SynthesizerNode: reconciling cross-agent findings for '{problem}'")
@@ -754,25 +863,48 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             all_agent_results=state.get("agent_outputs", {}),
         )
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
             if hasattr(synth_agent, "synthesize"):
-                synth_output = await synth_agent.synthesize(
-                    problem=synth_input.problem,
-                    research=synth_input.research or res_obj,
-                    strategy=synth_input.strategy or strat_obj,
-                    engineering=synth_input.engineering,
-                    guardian=synth_input.guardian,
-                    security=synth_input.security or sec_obj,
-                    evaluator=synth_input.evaluator,
-                    sources=synth_input.sources,
-                    conflicts=synth_input.conflicts,
-                    all_agent_results=synth_input.all_agent_results,
-                )
+                try:
+                    synth_output = await synth_agent.synthesize(
+                        problem=synth_input.problem,
+                        research=synth_input.research or res_obj,
+                        strategy=synth_input.strategy or strat_obj,
+                        engineering=synth_input.engineering,
+                        guardian=synth_input.guardian,
+                        security=synth_input.security or sec_obj,
+                        evaluator=synth_input.evaluator,
+                        sources=synth_input.sources,
+                        conflicts=synth_input.conflicts,
+                        all_agent_results=synth_input.all_agent_results,
+                        domain=active_domain,
+                    )
+                except TypeError:
+                    synth_output = await synth_agent.synthesize(
+                        problem=synth_input.problem,
+                        research=synth_input.research or res_obj,
+                        strategy=synth_input.strategy or strat_obj,
+                        engineering=synth_input.engineering,
+                        guardian=synth_input.guardian,
+                        security=synth_input.security or sec_obj,
+                        evaluator=synth_input.evaluator,
+                        sources=synth_input.sources,
+                        conflicts=synth_input.conflicts,
+                        all_agent_results=synth_input.all_agent_results,
+                    )
             else:
-                synth_output = await synth_agent.run(
-                    problem=synth_input.problem,
-                    context={"all_outputs": synth_input.all_agent_results},
-                )
+                try:
+                    synth_output = await synth_agent.run(
+                        problem=synth_input.problem,
+                        context={"all_outputs": synth_input.all_agent_results},
+                        domain=active_domain,
+                    )
+                except TypeError:
+                    synth_output = await synth_agent.run(
+                        problem=synth_input.problem,
+                        context={"all_outputs": synth_input.all_agent_results},
+                    )
             duration = (time.monotonic() - start) * 1000
 
             final_text_candidate = (
@@ -806,6 +938,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"SynthesizerNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Synthesizer failed: {type(e).__name__}"
@@ -835,6 +970,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 11: Reliability Monitor Node
     # -----------------------------------------------------------------
     async def reliability_monitor_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         synth_obj = get_canonical_agent_result(state, "synthesizer")
@@ -850,11 +986,15 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
         }
         logger.info("ReliabilityMonitorNode: auditing synthesized solution quality and safety gates")
 
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
             try:
-                rm_output = await rm_agent.run(problem, context=context_for_rm)
+                rm_output = await rm_agent.run(problem, context=context_for_rm, domain=active_domain)
             except TypeError:
-                rm_output = await rm_agent.run(problem)
+                try:
+                    rm_output = await rm_agent.run(problem, context=context_for_rm)
+                except TypeError:
+                    rm_output = await rm_agent.run(problem)
 
             duration = (time.monotonic() - start) * 1000
             rm_dump = rm_output.model_dump() if hasattr(rm_output, "model_dump") else dict(rm_output)
@@ -879,17 +1019,29 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 )
             elif rm_action == ReliabilityAction.REQUEST_MORE_INFORMATION:
                 missing_items = rm_dump.get("missing_information", []) or []
-                if missing_items:
-                    items_str = "\n".join(f"- {item}" for item in missing_items)
-                    gated_answer = (
-                        f"[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
-                        f"the following additional information is required:\n{items_str}"
+                if final_answer and len(final_answer.strip()) > 50:
+                    items_str = "\n".join(f"- {item}" for item in missing_items) if missing_items else "- Key contextual parameters or preferences"
+                    follow_up_section = (
+                        f"\n\n---\n### Clarifying Details for a Tailored Recommendation\n"
+                        f"To refine this preliminary framework into a definitive recommendation, consider these specific factors:\n"
+                        f"{items_str}"
                     )
+                    if items_str not in final_answer:
+                        gated_answer = f"{final_answer.strip()}{follow_up_section}"
+                    else:
+                        gated_answer = final_answer
                 else:
-                    gated_answer = (
-                        "[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
-                        "additional context regarding system requirements is required."
-                    )
+                    if missing_items:
+                        items_str = "\n".join(f"- {item}" for item in missing_items)
+                        gated_answer = (
+                            f"[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
+                            f"the following additional information is required:\n{items_str}"
+                        )
+                    else:
+                        gated_answer = (
+                            "[ADDITIONAL INFORMATION NEEDED] To provide a reliable and sound answer, "
+                            "additional context regarding system requirements is required."
+                        )
 
             reg = register_agent_result(state, "reliability_monitor", rm_output)
             trace_item = {
@@ -907,6 +1059,9 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"ReliabilityMonitorNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Reliability Monitor failed: {type(e).__name__}"
@@ -927,6 +1082,7 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
     # Node 12: Output Validator Node
     # -----------------------------------------------------------------
     async def output_validator_node(state: CHAIState) -> Dict[str, Any]:
+        await _check_node_cancel_or_pause(state)
         start = time.monotonic()
         problem = state.get("problem", "")
         logger.info("OutputValidatorNode: validating final synthesized output")
@@ -937,13 +1093,23 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
             or getattr(synth_obj, "final_text", "")
             or getattr(synth_obj, "final_answer", "")
         )
+        active_domain = state.get("resolved_domain") or normalize_domain(state.get("domain_category"))
         try:
-            val_output = validator_agent.validate(
-                output=delivered_candidate,
-                context={"all_outputs": state.get("agent_outputs", {})},
-                synthesis=synth_obj if isinstance(synth_obj, SynthesisResult) and not state.get("final_answer") else None,
-                problem=problem,
-            )
+            try:
+                val_output = validator_agent.validate(
+                    output=delivered_candidate,
+                    context={"all_outputs": state.get("agent_outputs", {})},
+                    synthesis=synth_obj if isinstance(synth_obj, SynthesisResult) and not state.get("final_answer") else None,
+                    problem=problem,
+                    domain=active_domain,
+                )
+            except TypeError:
+                val_output = validator_agent.validate(
+                    output=delivered_candidate,
+                    context={"all_outputs": state.get("agent_outputs", {})},
+                    synthesis=synth_obj if isinstance(synth_obj, SynthesisResult) and not state.get("final_answer") else None,
+                    problem=problem,
+                )
             duration = (time.monotonic() - start) * 1000
 
             if not isinstance(val_output, ValidationResult):
@@ -964,8 +1130,12 @@ def build_chai_workflow(agent_instances: Optional[Dict[str, Any]] = None) -> Any
                 "execution_status": "completed",
                 "completed_agents": state.get("completed_agents", []) + ["output_validator"],
                 "execution_trace": state.get("execution_trace", []) + [trace_item],
+                "resolved_domain": active_domain,
             }
         except Exception as e:
+            from backend.core.execution_events import RequestCancelledException
+            if isinstance(e, (RequestCancelledException, asyncio.CancelledError)):
+                raise e
             logger.error(f"OutputValidatorNode failed: {e}")
             duration = (time.monotonic() - start) * 1000
             err_msg = f"Output validation failed: {type(e).__name__}"

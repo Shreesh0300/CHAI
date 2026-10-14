@@ -13,6 +13,7 @@ from backend.agents.strategist.prompts import (
     SYSTEM_PROMPT,
     build_strategy_prompt,
 )
+from backend.core.domain_lenses import apply_domain_lens
 from backend.shared.llm_client import (
     get_gemini_chat_model,
     get_gemini_api_key,
@@ -79,6 +80,7 @@ class StrategistAgent:
         problem: str,
         research: Optional[Union[ResearchResult, dict]] = None,
         context: Optional[Union[str, dict]] = None,
+        domain: Optional[str] = None,
     ) -> StrategyResult:
         """
         Executes the strategy synthesis workflow grounded in ResearchResult.
@@ -148,8 +150,9 @@ class StrategistAgent:
             research=parsed_research,
             context=context,
         )
+        effective_system_prompt = apply_domain_lens(SYSTEM_PROMPT, "strategist", domain)
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=effective_system_prompt),
             HumanMessage(content=user_prompt),
         ]
 

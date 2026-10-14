@@ -25,6 +25,7 @@ from typing import Optional
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
+from backend.core.domain_lenses import apply_domain_lens
 from backend.agents.engineer.prompts import (
     SYSTEM_PROMPT,
     REFERENCE_CONTEXT_HEADER,
@@ -59,6 +60,7 @@ class EngineerAgent:
         self,
         problem: str,
         context: Optional[dict] = None,
+        domain: Optional[str] = None,
     ) -> EngineerOutput:
         """Analyse *problem* and return a structured ``EngineerOutput``.
 
@@ -69,6 +71,8 @@ class EngineerAgent:
         context:
             Optional dict with outputs from prior agents (researcher,
             strategist, etc.).  Forwarded verbatim to the LLM prompt.
+        domain:
+            Optional resolved domain ('business', 'personal', 'software').
 
         Returns
         -------
@@ -79,7 +83,11 @@ class EngineerAgent:
         """
         start_time = time.monotonic()
         has_context = bool(context)
-        logger.info(f"Engineer Agent: starting analysis (context_provided={has_context}).")
+        resolved_domain = domain or (
+            context.get("domain") or context.get("resolved_domain") or context.get("domain_category")
+            if isinstance(context, dict) else None
+        )
+        logger.info(f"Engineer Agent: starting analysis (context_provided={has_context}, domain={resolved_domain}).")
 
         # ---- Input validation ----
         if not problem or not problem.strip():
@@ -88,6 +96,7 @@ class EngineerAgent:
 
         # ---- Build LLM prompt ----
         user_prompt = self._build_user_prompt(problem, context)
+        effective_system_prompt = apply_domain_lens(self.system_prompt, "engineer", resolved_domain)
 
         # ---- Call LLM with bounded retry ----
         last_error: Optional[Exception] = None
@@ -95,7 +104,7 @@ class EngineerAgent:
             try:
                 response_text = await llm_client.generate_content(
                     prompt=user_prompt,
-                    system_instruction=self.system_prompt,
+                    system_instruction=effective_system_prompt,
                 )
 
                 # Handle mock mode (API key not configured)

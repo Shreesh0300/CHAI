@@ -22,6 +22,22 @@ logger = get_logger(__name__)
 
 
 # =============================================================================
+# =============================================================================
+# Helper: Conversation Title Generator
+# =============================================================================
+
+import re
+
+def generate_conversation_title(content: str) -> str:
+    """
+    Derives a clean, readable conversation title from the first user prompt.
+    Uses the dedicated title_service fallback logic without dangling ellipses.
+    """
+    from backend.chat.title_service import generate_fallback_title
+    return generate_fallback_title(content)
+
+
+# =============================================================================
 # 1. Conversation Repository
 # =============================================================================
 
@@ -32,7 +48,8 @@ class ConversationRepository:
     async def save_conversation(
         user_id: str,
         conversation_id: str,
-        title: str = "New Conversation",
+        title: Optional[str] = None,
+        is_final_title: bool = False,
         session: Optional[AsyncSession] = None,
     ) -> ConversationModel:
         async def _exec(s: AsyncSession) -> ConversationModel:
@@ -44,14 +61,29 @@ class ConversationRepository:
             result = await s.execute(stmt)
             existing = result.scalar_one_or_none()
             if existing:
-                existing.title = title
+                # Update title if explicitly designated as final AI title, or if existing title is generic/truncated
+                if title and title not in ("New Conversation", "Conversation", "New chat", ""):
+                    lower_existing = (existing.title or "").strip().lower()
+                    if (
+                        is_final_title
+                        or existing.title in ("New Conversation", "Conversation", "New chat", "")
+                        or existing.title.endswith("...")
+                        or existing.title.endswith("…")
+                        or lower_existing.endswith((" of", " to", " for", " in", " on", " with", " at", " by", " and", " or", " the", " a"))
+                        or lower_existing.startswith((
+                            "im thinking", "i'm thinking", "i am thinking",
+                            "thinking to", "thinking of", "thinking about",
+                            "trying to", "planning to",
+                        ))
+                    ):
+                        existing.title = title
                 existing.updated_at = now
                 return existing
 
             convo = ConversationModel(
                 id=conversation_id,
                 user_id=user_id,
-                title=title,
+                title=title or "New Conversation",
                 created_at=now,
                 updated_at=now,
             )
@@ -84,17 +116,112 @@ class ConversationRepository:
             return await _exec(s)
 
     @staticmethod
+    async def get_conversation_with_messages(
+        user_id: str,
+        conversation_id: str,
+        session: Optional[AsyncSession] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves a conversation and all its ordered messages.
+        Enforces strict user isolation: User A cannot read User B's conversation.
+        """
+        async def _exec(s: AsyncSession) -> Optional[Dict[str, Any]]:
+            stmt = select(ConversationModel).where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.user_id == user_id,
+            )
+            res = await s.execute(stmt)
+            convo = res.scalar_one_or_none()
+            if not convo:
+                return None
+
+            msg_stmt = (
+                select(MessageModel)
+                .where(
+                    MessageModel.conversation_id == conversation_id,
+                    MessageModel.user_id == user_id,
+                )
+                .order_by(MessageModel.created_at.asc())
+            )
+            msg_res = await s.execute(msg_stmt)
+            msgs = list(msg_res.scalars().all())
+
+            return {
+                "id": convo.id,
+                "user_id": convo.user_id,
+                "title": convo.title,
+                "created_at": convo.created_at,
+                "updated_at": convo.updated_at,
+                "messages": msgs,
+            }
+
+        if session:
+            return await _exec(session)
+        async with get_session() as s:
+            return await _exec(s)
+
+    @staticmethod
     async def list_conversations(
         user_id: str,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
         session: Optional[AsyncSession] = None,
     ) -> List[ConversationModel]:
-        """Returns conversations strictly belonging to user_id."""
+        """
+        Returns conversations strictly belonging to user_id, ordered by most recently updated.
+        Supports search matching conversation title or message content.
+        """
         async def _exec(s: AsyncSession) -> List[ConversationModel]:
+            from sqlalchemy import or_, exists, func
             stmt = select(ConversationModel).where(
                 ConversationModel.user_id == user_id
-            ).order_by(ConversationModel.updated_at.desc())
+            )
+            if search and search.strip():
+                term = f"%{search.strip().lower()}%"
+                msg_subquery = (
+                    select(1)
+                    .where(
+                        MessageModel.conversation_id == ConversationModel.id,
+                        MessageModel.user_id == user_id,
+                        func.lower(MessageModel.content).like(term),
+                    )
+                )
+                stmt = stmt.where(
+                    or_(
+                        func.lower(ConversationModel.title).like(term),
+                        exists(msg_subquery),
+                    )
+                )
+
+            stmt = stmt.order_by(ConversationModel.updated_at.desc()).limit(limit).offset(offset)
             result = await s.execute(stmt)
             return list(result.scalars().all())
+
+        if session:
+            return await _exec(session)
+        async with get_session() as s:
+            return await _exec(s)
+
+    @staticmethod
+    async def update_title(
+        user_id: str,
+        conversation_id: str,
+        title: str,
+        session: Optional[AsyncSession] = None,
+    ) -> Optional[ConversationModel]:
+        """Updates conversation title for user_id."""
+        async def _exec(s: AsyncSession) -> Optional[ConversationModel]:
+            stmt = select(ConversationModel).where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.user_id == user_id,
+            )
+            res = await s.execute(stmt)
+            convo = res.scalar_one_or_none()
+            if convo:
+                convo.title = title.strip()
+                convo.updated_at = _utc_now_iso()
+            return convo
 
         if session:
             return await _exec(session)
@@ -107,7 +234,16 @@ class ConversationRepository:
         conversation_id: str,
         session: Optional[AsyncSession] = None,
     ) -> bool:
+        """Deletes a conversation and its messages, strictly validating user ownership."""
         async def _exec(s: AsyncSession) -> bool:
+            # Delete associated messages first
+            await s.execute(
+                delete(MessageModel).where(
+                    MessageModel.conversation_id == conversation_id,
+                    MessageModel.user_id == user_id,
+                )
+            )
+            # Delete conversation
             stmt = delete(ConversationModel).where(
                 ConversationModel.id == conversation_id,
                 ConversationModel.user_id == user_id,
@@ -135,6 +271,7 @@ class MessageRepository:
         role: str,
         content: str,
         message_id: Optional[str] = None,
+        extra_data: Optional[Dict[str, Any]] = None,
         session: Optional[AsyncSession] = None,
     ) -> MessageModel:
         async def _exec(s: AsyncSession) -> MessageModel:
@@ -142,10 +279,11 @@ class MessageRepository:
             now = _utc_now_iso()
 
             # Ensure conversation exists and is owned by user_id
+            convo_title = generate_conversation_title(content) if role == "user" else None
             await ConversationRepository.save_conversation(
                 user_id=user_id,
                 conversation_id=conversation_id,
-                title=content[:30] if role == "user" else "Conversation",
+                title=convo_title,
                 session=s,
             )
 
@@ -155,6 +293,7 @@ class MessageRepository:
                 user_id=user_id,
                 role=role,
                 content=content,
+                extra_data=extra_data or {},
                 created_at=now,
             )
             s.add(msg)
@@ -192,6 +331,31 @@ class MessageRepository:
             return await _exec(session)
         async with get_session() as s:
             return await _exec(s)
+
+    @staticmethod
+    async def get_all_messages(
+        conversation_id: str,
+        user_id: Optional[str] = None,
+        session: Optional[AsyncSession] = None,
+    ) -> List[MessageModel]:
+        """
+        Retrieves all messages for a conversation in chronological order.
+        If user_id is provided, enforces user ownership.
+        """
+        async def _exec(s: AsyncSession) -> List[MessageModel]:
+            stmt = select(MessageModel).where(MessageModel.conversation_id == conversation_id)
+            if user_id:
+                stmt = stmt.where(MessageModel.user_id == user_id)
+            stmt = stmt.order_by(MessageModel.created_at.asc())
+
+            result = await s.execute(stmt)
+            return list(result.scalars().all())
+
+        if session:
+            return await _exec(session)
+        async with get_session() as s:
+            return await _exec(s)
+
 
 
 # =============================================================================

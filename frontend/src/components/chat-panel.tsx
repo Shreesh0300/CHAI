@@ -2,8 +2,9 @@
 
 import { LoaderCircle, MessageCircle } from "lucide-react"
 import { ThinkingOrb } from "thinking-orbs"
-import type { AssistantMode, ChatMessage, PromptInputMeta } from "@/components/chat-types"
+import type { AssistantMode, ChatMessage, PromptInputMeta, DomainCategory, ExecutionTrackerState } from "@/components/chat-types"
 import { ChatMessageRow } from "@/components/chat-message"
+import { AgentExecutionTracker } from "@/components/agent-execution-tracker"
 import { AiChatInput } from "@/components/ui/ai-chat-input"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -16,6 +17,8 @@ import {
 } from "@/components/ui/message-scroller"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { cn } from "@/lib/utils"
+
+import { GenerationControls } from "@/components/generation-controls"
 
 const MODE_LABELS: Record<AssistantMode, string> = {
   ask: "Ask",
@@ -30,6 +33,16 @@ interface ChatPanelProps {
   className?: string
   onSubmit: (value: string, meta: PromptInputMeta) => void
   onMicClick?: () => void
+  category?: DomainCategory
+  onCategoryChange?: (category: DomainCategory) => void
+  liveTrackerState?: ExecutionTrackerState | null
+  isChatModeResponding?: boolean
+  isPaused?: boolean
+  onPause?: () => void
+  onResume?: () => void
+  onCancel?: () => void
+  selectedAgent?: string | null
+  onSelectAgent?: (agentKey: string | null) => void
 }
 
 export function ChatPanel({
@@ -39,6 +52,16 @@ export function ChatPanel({
   className,
   onSubmit,
   onMicClick,
+  category,
+  onCategoryChange,
+  liveTrackerState,
+  isChatModeResponding = false,
+  isPaused = false,
+  onPause,
+  onResume,
+  onCancel,
+  selectedAgent,
+  onSelectAgent,
 }: ChatPanelProps) {
   return (
     <aside
@@ -70,12 +93,26 @@ export function ChatPanel({
                   key={message.id}
                   scrollAnchor={index === messages.length - 1 && !isResponding}
                 >
-                  <ChatMessageRow message={message} />
+                  <ChatMessageRow
+                    message={message}
+                    selectedAgent={selectedAgent}
+                    onSelectAgent={onSelectAgent}
+                  />
                 </MessageScrollerItem>
               ))}
               {isResponding && (
                 <MessageScrollerItem scrollAnchor>
-                  <ThinkingRow mode={mode} />
+                  <ThinkingRow
+                    mode={mode}
+                    liveTrackerState={liveTrackerState}
+                    isChatModeResponding={isChatModeResponding}
+                    isPaused={isPaused}
+                    onPause={onPause}
+                    onResume={onResume}
+                    onCancel={onCancel}
+                    selectedAgent={selectedAgent}
+                    onSelectAgent={onSelectAgent}
+                  />
                 </MessageScrollerItem>
               )}
             </MessageScrollerContent>
@@ -96,6 +133,8 @@ export function ChatPanel({
             placeholder="Ask a follow-up..."
             onSubmit={onSubmit}
             onMicClick={onMicClick}
+            category={category}
+            onCategoryChange={onCategoryChange}
           />
         </div>
         <p className="mx-auto mt-1.5 max-w-[560px] px-1 text-[10px] leading-4 text-muted-foreground">
@@ -106,8 +145,89 @@ export function ChatPanel({
   )
 }
 
-function ThinkingRow({ mode }: { mode: AssistantMode }) {
-  const isAgentMode = mode === 'agent'
+function ThinkingRow({
+  mode,
+  liveTrackerState,
+  isChatModeResponding,
+  isPaused,
+  onPause,
+  onResume,
+  onCancel,
+  selectedAgent,
+  onSelectAgent,
+}: {
+  mode: AssistantMode
+  liveTrackerState?: ExecutionTrackerState | null
+  isChatModeResponding?: boolean
+  isPaused?: boolean
+  onPause?: () => void
+  onResume?: () => void
+  onCancel?: () => void
+  selectedAgent?: string | null
+  onSelectAgent?: (agentKey: string | null) => void
+}) {
+  const hasControls = Boolean(onPause && onResume && onCancel)
+
+  if (isChatModeResponding) {
+    return (
+      <Marker
+        role="status"
+        aria-live="polite"
+        className="rounded-lg border border-border/70 bg-muted/40 px-3 py-2 text-xs"
+      >
+        <MarkerIcon>
+          {isPaused ? (
+            <span className="size-2 rounded-full bg-amber-400" />
+          ) : (
+            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-primary" />
+          )}
+        </MarkerIcon>
+        <MarkerContent>
+          <span className="font-medium text-foreground">
+            {isPaused ? "Paused" : "CHAI is responding..."}
+          </span>
+        </MarkerContent>
+        {hasControls ? (
+          <GenerationControls
+            isPaused={Boolean(isPaused)}
+            onPause={onPause!}
+            onResume={onResume!}
+            onCancel={onCancel!}
+            compact
+            className="ml-auto"
+          />
+        ) : (
+          !isPaused && (
+            <span aria-hidden="true" className="ml-auto flex items-center gap-1">
+              <span className="size-1.5 animate-pulse rounded-full bg-primary/70" />
+              <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:120ms]" />
+              <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:240ms]" />
+            </span>
+          )
+        )}
+      </Marker>
+    )
+  }
+
+  if (liveTrackerState && liveTrackerState.mode === "solve") {
+    return (
+      <div className="w-full">
+        <AgentExecutionTracker
+          state={liveTrackerState}
+          isLive={true}
+          defaultExpanded={false}
+          isPaused={isPaused}
+          onPause={onPause}
+          onResume={onResume}
+          onCancel={onCancel}
+          selectedAgent={selectedAgent}
+          onSelectAgent={onSelectAgent}
+        />
+      </div>
+    )
+  }
+
+  const isAgentMode = mode === "agent"
 
   return (
     <Marker
@@ -115,8 +235,10 @@ function ThinkingRow({ mode }: { mode: AssistantMode }) {
       aria-live="polite"
       className="rounded-lg border border-border/70 bg-muted/40 px-3 py-2 text-xs"
     >
-      <MarkerIcon className={isAgentMode ? 'size-5' : undefined}>
-        {isAgentMode ? (
+      <MarkerIcon className={isAgentMode ? "size-5" : undefined}>
+        {isPaused ? (
+          <span className="size-2 rounded-full bg-amber-400" />
+        ) : isAgentMode ? (
           <ThinkingOrb
             state="working"
             size={20}
@@ -128,14 +250,29 @@ function ThinkingRow({ mode }: { mode: AssistantMode }) {
         )}
       </MarkerIcon>
       <MarkerContent>
-        {isAgentMode ? 'CHAI is coordinating your workflow...' : 'Thinking through your prompt...'}
+        {isPaused
+          ? "Paused"
+          : isAgentMode
+          ? "CHAI is coordinating your workflow..."
+          : "CHAI is analyzing your request..."}
       </MarkerContent>
-      {!isAgentMode && (
-        <span aria-hidden="true" className="ml-auto flex items-center gap-1">
-          <span className="size-1.5 animate-pulse rounded-full bg-primary/70" />
-          <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:120ms]" />
-          <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:240ms]" />
-        </span>
+      {hasControls ? (
+        <GenerationControls
+          isPaused={Boolean(isPaused)}
+          onPause={onPause!}
+          onResume={onResume!}
+          onCancel={onCancel!}
+          compact
+          className="ml-auto"
+        />
+      ) : (
+        !isPaused && !isAgentMode && (
+          <span aria-hidden="true" className="ml-auto flex items-center gap-1">
+            <span className="size-1.5 animate-pulse rounded-full bg-primary/70" />
+            <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:120ms]" />
+            <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:240ms]" />
+          </span>
+        )
       )}
     </Marker>
   )

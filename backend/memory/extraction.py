@@ -51,12 +51,19 @@ DURABLE_PATTERNS = [
         "User is currently a college student.",
         3
     ),
+    # Identity / Name
+    (
+        re.compile(r"(?:(?:hi|hey|hello)[,! ]*)?(?:i(?:'m|\s*am)|iam|my name is)\s+([a-zA-Z]{2,25})\b(?:[,.! ]|$)", re.IGNORECASE),
+        MemoryCategory.GENERAL,
+        "User's name is {match}.",
+        4
+    ),
     # Projects
     (
-        re.compile(r"(?:i(?:'m|\s+am)\s+building|working\s+on)\s+(?:a\s+|an\s+)?([^.!?\n]+)", re.IGNORECASE),
+        re.compile(r"(?:i(?:'m|\s*am)|iam)\s+(?:building|working\s+on)\s+(?:a\s+|an\s+|the\s+)?([^.!?\n]+)", re.IGNORECASE),
         MemoryCategory.PROJECT,
-        "User is working on {match}.",
-        3
+        "User is building {match}.",
+        4
     ),
     # Preferences
     (

@@ -37,6 +37,7 @@ class MessageModel(Base):
     user_id = Column(String(128), index=True, nullable=False)
     role = Column(String(32), nullable=False)  # 'user', 'assistant', 'system'
     content = Column(Text, nullable=False)
+    extra_data = Column(JSON, nullable=True, default=dict)
     created_at = Column(String(64), nullable=False, default=_utc_now_iso)
 
 

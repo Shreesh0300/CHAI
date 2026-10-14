@@ -43,6 +43,11 @@ export function WorkResults({ artifact }: { artifact: WorkArtifact }) {
             <Check data-icon="inline-start" />
             Work completed
           </Badge>
+          {(artifact.resolved_domain || artifact.domain) && (
+            <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider">
+              Domain: {artifact.resolved_domain || artifact.domain}
+            </Badge>
+          )}
         </div>
         <h1 className="text-balance text-2xl font-semibold tracking-tight sm:text-3xl">
           {artifact.title}

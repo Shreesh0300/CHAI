@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { MessageCircle, Search, X, Sparkles, Clock, FolderGit2 } from "lucide-react"
-import type { AssistantMode, WorkspaceLayout } from "@/components/chat-types"
+import { cleanConversationTitle, type AssistantMode, type WorkspaceLayout } from "@/components/chat-types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { loadConversations, type ConversationRow } from "@/lib/supabase-conversations"
 
 export interface SampleConversation {
   id: string
@@ -18,27 +19,31 @@ export interface SampleConversation {
 
 export const SAMPLE_CONVERSATIONS: SampleConversation[] = [
   {
-    id: "onboarding",
-    title: "A better onboarding flow",
+    id: "chai-engine",
+    title: "CHAI Engine Architecture",
+    mode: "agent",
+    layout: "chat",
+    prompt: "https://github.com/Shreesh0300/CHAI/tree/chai-engine",
+    answer:
+      "## Executive Summary\nThe `chai-engine` repository provides a foundational, asynchronous framework for orchestrating multi-agent AI workflows. It utilizes an event-driven architecture designed to manage task decomposition, state persistence, and model-agnostic LLM interaction.\n\n## Core Analysis & Findings\nThe engine operates on a Mediator/Orchestrator pattern, utilizing asyncio for task concurrency and Pydantic for schema enforcement. The system is designed to handle long-running, multi-step agentic workflows by persisting intermediate states.\n\n## Technical Architecture\nStateless worker nodes interacting with centralized persistence, bounded retries, and hardened security guardrails.",
+  },
+  {
+    id: "microservices",
+    title: "Microservices Event Mesh",
+    mode: "research",
+    layout: "chat",
+    prompt: "Design a resilient microservices mesh with service discovery and distributed caching.",
+    answer:
+      "## Executive Summary\nA production-grade event mesh decouples service-to-service communication while ensuring high availability through Redis replication and zero-trust mutual TLS.\n\n## Architectural Blueprint\n1. API Gateway Tier with rate limiting and JWT validation.\n2. Service mesh control plane with Envoy sidecars.\n3. Resilient event broker with dead-letter queue recovery.",
+  },
+  {
+    id: "security-audit",
+    title: "Zero-Trust Security Audit",
     mode: "ask",
     layout: "chat",
-    prompt: "What makes a good first-run experience for a new user?",
+    prompt: "Audit deserialization vulnerabilities and indirect prompt injection vectors.",
     answer:
-      "A good first-run experience helps someone reach a meaningful win quickly. Show one clear next step, explain why it matters, and avoid asking for information before it is useful. Keep the path easy to skip or revisit, then use early behavior to make the next visit feel more relevant.",
-  },
-  {
-    id: "comparison",
-    title: "Campaign performance snapshot",
-    mode: "research",
-    layout: "workspace",
-    prompt: "Review this campaign performance snapshot with a trend chart, channel breakdown, and next steps.",
-  },
-  {
-    id: "launch",
-    title: "Growth action brief",
-    mode: "agent",
-    layout: "workspace",
-    prompt: "Create a growth action plan from this campaign performance snapshot, with milestones and measures of success.",
+      "## Security Audit & Mitigations\n1. Strict schema validation using Pydantic models before deserialization.\n2. Zero-trust sandboxing for external tool execution.\n3. Content sanitization pipeline isolating untrusted user input from LLM system prompts.",
   },
 ]
 
@@ -66,27 +71,45 @@ export function ChatHistoryPopover({
   const popoverRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  // Fetch backend history data
+  // Fetch conversation history from Supabase
   useEffect(() => {
     if (open) {
+      // Primary: Load from Supabase
+      loadConversations().then((rows) => {
+        if (Array.isArray(rows) && rows.length > 0) {
+          const formatted = rows.map((row) => ({
+            id: row.id,
+            title: row.title || 'Untitled',
+            mode: (row.mode || "ask") as AssistantMode,
+            layout: (row.layout || "chat") as WorkspaceLayout,
+            prompt: row.title || '',
+          }))
+          setRemoteHistory(formatted)
+        }
+      }).catch(() => {})
+
+      // Fallback: Also try backend /api/history
       fetch("http://localhost:8000/api/history")
         .then((res) => (res.ok ? res.json() : []))
         .then((data: any[]) => {
           if (Array.isArray(data) && data.length > 0) {
-            const formatted = data.map((d) => ({
-              id: d.id,
-              title: d.title,
-              mode: (d.mode || "ask") as AssistantMode,
-              layout: (d.layout || "chat") as WorkspaceLayout,
-              prompt: d.messages?.[0]?.content || d.title,
-              answer: d.messages?.[1]?.content,
-            }))
-            setRemoteHistory(formatted)
+            setRemoteHistory((prev) => {
+              const existingIds = new Set(prev.map((p) => p.id))
+              const newItems = data
+                .filter((d) => !existingIds.has(d.id))
+                .map((d) => ({
+                  id: d.id,
+                  title: d.title,
+                  mode: (d.mode || "ask") as AssistantMode,
+                  layout: (d.layout || "chat") as WorkspaceLayout,
+                  prompt: d.messages?.[0]?.content || d.title,
+                  answer: d.messages?.[1]?.content,
+                }))
+              return [...prev, ...newItems]
+            })
           }
         })
-        .catch(() => {
-          // offline or fallback to repo samples
-        })
+        .catch(() => {})
     }
   }, [open])
 
@@ -223,7 +246,7 @@ export function ChatHistoryPopover({
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{item.title}</span>
+                    <span className="truncate">{cleanConversationTitle(item.title)}</span>
                   </div>
 
                   {item.isGitRepo && (

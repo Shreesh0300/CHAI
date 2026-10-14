@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
+from backend.core.domain_lenses import apply_domain_lens
 from backend.agents.conflict_resolver.prompts import (
     SYSTEM_PROMPT,
     REFERENCE_CONTEXT_HEADER,
@@ -74,6 +75,7 @@ class ConflictResolverAgent:
         self,
         problem: str,
         context: Optional[dict] = None,
+        domain: Optional[str] = None,
     ) -> ConflictResolutionResult:
         """Arbitrate cross-agent conflicts against the user's problem and constraints.
 
@@ -84,6 +86,8 @@ class ConflictResolverAgent:
         context:
             Collected agent outputs and Evaluator findings (e.g. ``{"all_outputs": {...}}``
             or direct per-agent dicts). Treated strictly as untrusted reference data.
+        domain:
+            Optional resolved domain ('business', 'personal', 'software').
 
         Returns
         -------
@@ -93,7 +97,11 @@ class ConflictResolverAgent:
         """
         start_time = time.monotonic()
         has_context = bool(context)
-        logger.info(f"Conflict Resolver Agent: starting arbitration (context_provided={has_context}).")
+        resolved_domain = domain or (
+            context.get("domain") or context.get("resolved_domain") or context.get("domain_category")
+            if isinstance(context, dict) else None
+        )
+        logger.info(f"Conflict Resolver Agent: starting arbitration (context_provided={has_context}, domain={resolved_domain}).")
 
         # ---- Input validation ----
         if not problem or not problem.strip():
@@ -102,6 +110,7 @@ class ConflictResolverAgent:
 
         # ---- Build LLM prompt ----
         user_prompt = self._build_user_prompt(problem, context)
+        effective_system_prompt = apply_domain_lens(self.system_prompt, "conflict_resolver", resolved_domain)
 
         # ---- Call LLM with bounded retry ----
         last_error: Optional[Exception] = None
@@ -109,7 +118,7 @@ class ConflictResolverAgent:
             try:
                 response_text = await llm_client.generate_content(
                     prompt=user_prompt,
-                    system_instruction=self.system_prompt,
+                    system_instruction=effective_system_prompt,
                 )
 
                 # Handle mock mode (API key not configured)

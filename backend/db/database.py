@@ -75,9 +75,23 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> bool:
     global _db_initialized
     active_engine = engine or get_engine()
 
+    def _run_migrations_sync(connection):
+        import sqlalchemy as sa
+        inspector = sa.inspect(connection)
+        tables = inspector.get_table_names()
+        if "messages" in tables:
+            columns = [col["name"] for col in inspector.get_columns("messages")]
+            if "extra_data" not in columns:
+                try:
+                    connection.execute(sa.text("ALTER TABLE messages ADD COLUMN extra_data JSON"))
+                    logger.info("[DATABASE] Added 'extra_data' column to 'messages' table.")
+                except Exception as e:
+                    logger.debug(f"[DATABASE] extra_data column migration notice: {e}")
+
     try:
         async with active_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_run_migrations_sync)
         _db_initialized = True
         logger.info("[DATABASE] Verified and created database schema tables.")
         return True
@@ -89,6 +103,7 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> bool:
             fallback_engine = get_engine(fallback_url)
             async with fallback_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                await conn.run_sync(_run_migrations_sync)
             _db_initialized = True
             logger.info("[DATABASE] Initialized fallback SQLite database schema successfully.")
             return True

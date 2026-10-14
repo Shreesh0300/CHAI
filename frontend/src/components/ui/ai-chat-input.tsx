@@ -1017,7 +1017,7 @@ import {
   AttachmentTitle as UiAttachmentTitle,
 } from "@/components/ui/attachment";
 import { Button as UiButton } from "@/components/ui/button";
-import type { PromptInputMeta as ChatPromptInputMeta } from "@/components/chat-types";
+import type { PromptInputMeta as ChatPromptInputMeta, DomainCategory } from "@/components/chat-types";
 import {
   ArrowUp as ArrowUpLucide,
   ChevronDown as ChevronDownLucide,
@@ -1029,15 +1029,6 @@ import {
   Sparkles as SparklesLucide,
   X as XLucide,
 } from "lucide-react";
-
-const CHAT_MODELS = [
-  "Auto",
-  "GPT 5.5",
-  "Opus 4.8",
-  "Gemini 3.5 Flash",
-  "Composer 2.5",
-  "GLM 5.2",
-] as const;
 
 const CHAT_EFFORTS = ["Quick", "Balanced", "Deep"] as const;
 const CHAT_MAX_ATTACHMENTS = 4;
@@ -1055,6 +1046,8 @@ export interface AiChatInputProps {
   compact?: boolean;
   className?: string;
   onMicClick?: () => void;
+  category?: DomainCategory;
+  onCategoryChange?: (category: DomainCategory) => void;
 }
 
 export function AiChatInput({
@@ -1064,9 +1057,18 @@ export function AiChatInput({
   compact = false,
   className,
   onMicClick,
+  category: categoryProp,
+  onCategoryChange,
 }: AiChatInputProps) {
   const [value, setValue] = React.useState("");
-  const [model, setModel] = React.useState<(typeof CHAT_MODELS)[number]>("Auto");
+  const [internalCategory, setInternalCategory] = React.useState<DomainCategory>("AUTO");
+  const activeCategory = categoryProp ?? internalCategory;
+
+  const handleCategoryChange = (newCat: DomainCategory) => {
+    setInternalCategory(newCat);
+    onCategoryChange?.(newCat);
+  };
+
   const [effortIndex, setEffortIndex] = React.useState(1);
   const [attachments, setAttachments] = React.useState<File[]>([]);
   type MicStatus = "idle" | "listening" | "transcribing" | "error";
@@ -1258,8 +1260,9 @@ export function AiChatInput({
     }
 
     onSubmit(value.trim(), {
-      model,
+      model: "Auto",
       effort: CHAT_EFFORTS[effortIndex],
+      category: activeCategory,
       attachments,
       isVoice: isVoiceRef.current,
       language: voiceLangRef.current,
@@ -1369,19 +1372,20 @@ export function AiChatInput({
         </div>
       )}
 
-      <div className="flex flex-nowrap items-center justify-between gap-2 px-3 pb-3 pt-2">
-        <div className="flex min-w-0 flex-nowrap items-center gap-0.5 sm:gap-1">
+      <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
           <UiButton
             type="button"
             variant="ghost"
             size="sm"
             disabled={disabled || attachments.length >= CHAT_MAX_ATTACHMENTS}
             onClick={() => fileInputRef.current?.click()}
-            className="text-muted-foreground"
+            className="h-7 shrink-0 px-2 text-muted-foreground hover:text-foreground"
             aria-label={`Attach a file, up to ${CHAT_MAX_ATTACHMENTS} files`}
+            title="Attach a file"
           >
-            <PaperclipLucide data-icon="inline-start" />
-            <span className="hidden sm:inline">{compact ? "Attach" : "Attach file"}</span>
+            <PaperclipLucide className="size-3.5" />
+            {!compact && <span className="hidden sm:inline text-xs ml-1">Attach</span>}
           </UiButton>
           <input
             ref={fileInputRef}
@@ -1394,26 +1398,26 @@ export function AiChatInput({
             aria-hidden="true"
           />
 
-          <label className="sr-only" htmlFor={`${textareaId}-model`}>
-            Response model
+          <label className="sr-only" htmlFor={`${textareaId}-category`}>
+            Domain category
           </label>
-          <div className="relative">
+          <div className="relative shrink-0">
             <select
-              id={`${textareaId}-model`}
-              value={model}
+              id={`${textareaId}-category`}
+              value={activeCategory}
               disabled={disabled}
-              onChange={(event) => setModel(event.currentTarget.value as (typeof CHAT_MODELS)[number])}
-              className="h-7 max-w-[120px] appearance-none rounded-lg border-0 bg-transparent py-1 pl-2 pr-6 text-xs text-muted-foreground outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed sm:max-w-[138px]"
+              onChange={(event) => handleCategoryChange(event.currentTarget.value as DomainCategory)}
+              className="h-7 appearance-none rounded-lg border-0 bg-transparent py-1 pl-2 pr-5 text-xs font-medium text-muted-foreground hover:text-foreground outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed cursor-pointer"
+              aria-label="Domain lens selector"
             >
-              {CHAT_MODELS.map((modelName) => (
-                <option key={modelName} value={modelName}>
-                  {modelName}
-                </option>
-              ))}
+              <option value="AUTO">Domain</option>
+              <option value="BUSINESS">Business</option>
+              <option value="PERSONAL">Personal</option>
+              <option value="SOFTWARE">Software</option>
             </select>
             <ChevronDownLucide
               aria-hidden="true"
-              className="pointer-events-none absolute right-1.5 top-1/2 size-3 -translate-y-1/2 text-muted-foreground"
+              className="pointer-events-none absolute right-1 top-1/2 size-3 -translate-y-1/2 text-muted-foreground"
             />
           </div>
 
@@ -1423,15 +1427,16 @@ export function AiChatInput({
             size="sm"
             disabled={disabled}
             aria-label={`Response effort: ${CHAT_EFFORTS[effortIndex]}. Click to change.`}
+            title={`Response effort: ${CHAT_EFFORTS[effortIndex]}`}
             onClick={() => setEffortIndex((current) => (current + 1) % CHAT_EFFORTS.length)}
-            className="text-muted-foreground"
+            className="h-7 shrink-0 px-2 text-muted-foreground hover:text-foreground"
           >
-            <SparklesLucide data-icon="inline-start" />
-            <span className="hidden sm:inline">{CHAT_EFFORTS[effortIndex]}</span>
+            <SparklesLucide className="size-3.5" />
+            {!compact && <span className="hidden md:inline text-xs ml-1">{CHAT_EFFORTS[effortIndex]}</span>}
           </UiButton>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5 ml-auto">
           <UiButton
             type="button"
             variant="ghost"
@@ -1453,7 +1458,7 @@ export function AiChatInput({
             }
             onClick={handleMicClick}
             className={cn(
-              "group relative shrink-0 rounded-xl transition-all duration-300",
+              "group relative size-8 shrink-0 rounded-xl transition-all duration-300",
               "text-muted-foreground hover:text-primary hover:bg-primary/10 hover:border-primary/25",
               micStatus === "listening" && "chai-mic-active text-primary bg-primary/15 ring-2 ring-primary/40",
               micStatus === "transcribing" && "text-primary bg-primary/10",
@@ -1476,15 +1481,14 @@ export function AiChatInput({
             )}
           </UiButton>
 
-
           <UiButton
             type="submit"
             size="icon"
             disabled={disabled || !canSubmit}
             aria-label="Send message"
-            className="shrink-0 rounded-xl"
+            className="size-8 shrink-0 rounded-xl"
           >
-            <ArrowUpLucide />
+            <ArrowUpLucide className="size-4" />
           </UiButton>
         </div>
       </div>

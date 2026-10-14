@@ -14,6 +14,8 @@ class Settings(BaseSettings):
 
     supabase_url: str = ""
     supabase_service_role_key: str = ""
+    supabase_anon_key: str = ""
+    supabase_publishable_key: str = ""
 
     web_search_api_key: str = ""
     web_search_max_results: int = 5

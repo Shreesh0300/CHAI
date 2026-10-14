@@ -224,21 +224,67 @@ def normalize_conversational_query(text: str) -> str:
 
 
 def _detect_domain(lower: str) -> str:
-    """Detects query domain from semantic content."""
-    if any(k in lower for k in ("parents", "job", "career", "quit", "dependent", "financial situation")):
-        return "personal_career"
-    if any(k in lower for k in ("startup", "business strategy", "economic risk", "go-to-market", "monetization")):
-        return "business_strategy"
-    if any(k in lower for k in ("healthcare", "clinical", "patient", "medical", "hipaa", "doctor")):
-        return "healthcare"
-    if any(k in lower for k in ("security", "threat", "vulnerability", "cve", "penetration", "auth", "encryption")):
-        return "cybersecurity"
-    if any(k in lower for k in (
-        "tech stack", "technology stack", "architecture", "microservice", "database", "postgresql", "mongodb",
-        "system", "software", "rag", "consensus", "distributed", "python", "java", "code"
-    )):
-        return "software_engineering"
-    return "general"
+    """Detects query domain from semantic content using phrase and token scoring."""
+    tokens = set(re.findall(r"\b[a-z0-9_\-]+\b", lower))
+
+    # 1. Personal & Career decisions
+    personal_phrases = (
+        "work life balance", "work-life balance", "financial situation",
+        "graduate school", "grad school", "career transition",
+    )
+    personal_words = {
+        "parents", "job", "career", "quit", "dependent", "transition",
+        "promotion", "personal", "salary", "workplace", "family",
+        "relationship", "burnout", "hiring", "interview", "resume",
+        "relocation", "relocate", "offer", "offers",
+    }
+
+    # 2. Business & Market Strategy
+    business_phrases = (
+        "business strategy", "economic risk", "go-to-market", "monetization",
+        "market entry", "unit economics", "customer acquisition",
+        "market size", "business model", "payback period", "market opportunity",
+        "pricing strategy", "small businesses", "small business",
+    )
+    business_words = {
+        "startup", "roi", "cac", "churn", "pricing", "business", "businesses",
+        "competitor", "competition", "revenue", "profit", "b2b", "b2c", "valuation", "saas",
+    }
+
+    # 3. Healthcare & Clinical
+    healthcare_phrases = ("medical device", "clinical trial")
+    healthcare_words = {"healthcare", "clinical", "patient", "medical", "hipaa", "doctor", "health", "clinic"}
+
+    # 4. Cybersecurity
+    security_phrases = ("penetration testing", "sql injection", "zero day")
+    security_words = {"security", "threat", "vulnerability", "cve", "penetration", "auth", "encryption", "cybersecurity"}
+
+    # 5. Software & Systems Engineering
+    software_phrases = (
+        "tech stack", "technology stack", "microservices architecture", "system design",
+        "backend architecture", "frontend architecture", "authentication and authorization",
+    )
+    software_words = {
+        "architecture", "microservice", "microservices", "database", "postgresql",
+        "mongodb", "system", "software", "rag", "consensus", "distributed",
+        "python", "java", "code", "fastapi", "redis", "golang", "kubernetes",
+        "api", "apis", "docker", "frontend", "backend", "caching", "cache", "server", "broker", "raft",
+        "react", "vue", "angular", "sql", "oauth", "jwt",
+    }
+
+    scores = {
+        "personal_career": sum(3 for p in personal_phrases if p in lower) + len(tokens & personal_words),
+        "business_strategy": sum(3 for p in business_phrases if p in lower) + len(tokens & business_words),
+        "healthcare": sum(3 for p in healthcare_phrases if p in lower) + len(tokens & healthcare_words),
+        "cybersecurity": sum(3 for p in security_phrases if p in lower) + len(tokens & security_words),
+        "software_engineering": sum(3 for p in software_phrases if p in lower) + len(tokens & software_words),
+    }
+
+    best_domain = max(scores, key=lambda k: scores[k])
+    if scores[best_domain] == 0:
+        return "general"
+    return best_domain
+
 
 
 def _detect_requested_depth(lower: str) -> Literal["brief", "normal", "deep"]:
@@ -266,7 +312,104 @@ def _detect_requested_depth(lower: str) -> Literal["brief", "normal", "deep"]:
     return "normal"
 
 
+# ---------------------------------------------------------------------------
+# DOMAIN LENS: resolve_domain and domain instruction builder
+# ---------------------------------------------------------------------------
+
+# Internal domain strings mapped to human-readable labels (for logging)
+_DOMAIN_LABELS: dict = {
+    "business_strategy": "Business",
+    "personal_career": "Personal",
+    "software_engineering": "Software Engineering",
+    "healthcare": "Healthcare",
+    "cybersecurity": "Cybersecurity",
+    "general": "General",
+}
+
+# Short instruction prefixes injected into all specialist agent prompts
+_DOMAIN_INSTRUCTIONS: dict = {
+    "business_strategy": (
+        "DOMAIN LENS \u2014 BUSINESS:\n"
+        "The user has selected the BUSINESS domain. Prioritise strategic analysis, "
+        "market dynamics, competitive positioning, financial trade-offs, ROI, unit economics, "
+        "go-to-market planning, and operational risk assessment. "
+        "Avoid low-level technical implementation details unless explicitly requested."
+    ),
+    "personal_career": (
+        "DOMAIN LENS \u2014 PERSONAL:\n"
+        "The user has selected the PERSONAL domain. Prioritise the individual\u2019s situation, "
+        "values, and priorities. Emphasise practical decision frameworks, opportunity costs, "
+        "emotional considerations, downside protection, and achievable next steps. "
+        "Avoid corporate jargon and do not assume unstated facts about the user\u2019s life."
+    ),
+    "software_engineering": (
+        "DOMAIN LENS \u2014 SOFTWARE:\n"
+        "The user has selected the SOFTWARE domain. Prioritise system architecture, "
+        "code design, scalability, API contracts, database choices, security hardening, "
+        "performance trade-offs, and engineering best practices. "
+        "Provide concrete technical depth including code examples where relevant."
+    ),
+    "general": (
+        "DOMAIN LENS \u2014 AUTO (general):\n"
+        "No explicit domain was selected. Adapt tone, depth, and structure to the nature "
+        "of the user\u2019s question."
+    ),
+}
+
+
+def resolve_domain(
+    problem: str,
+    category: Optional[str] = None,
+    context: Optional[str] = None,
+) -> tuple:
+    """
+    Resolves the active domain for a request.
+
+    RULE: EXPLICIT USER CATEGORY > AUTOMATIC CLASSIFICATION.
+
+    Parameters
+    ----------
+    problem : str
+        The user's raw query.
+    category : Optional[str]
+        Explicit category selected by the user in the UI.
+        Valid values: 'AUTO', 'BUSINESS', 'PERSONAL', 'SOFTWARE', or None.
+        None and 'AUTO' both fall through to automatic detection.
+    context : Optional[str]
+        Optional conversation context for domain detection.
+
+    Returns
+    -------
+    tuple  (domain: str, domain_instruction: str)
+        domain             - Internal domain string (e.g. 'business_strategy')
+        domain_instruction - Instruction prefix to inject into specialist agent prompts
+    """
+    cat = (category or "AUTO").strip().upper()
+
+    # Explicit user selection is the FINAL AUTHORITY
+    if cat == "BUSINESS":
+        domain = "business_strategy"
+    elif cat == "PERSONAL":
+        domain = "personal_career"
+    elif cat == "SOFTWARE":
+        domain = "software_engineering"
+    else:
+        # AUTO: fall back to semantic detection
+        full_text = (problem or "").lower()
+        if context:
+            full_text = f"{full_text} {context.lower()}"
+        domain = _detect_domain(full_text)
+
+    instruction = _DOMAIN_INSTRUCTIONS.get(domain, _DOMAIN_INSTRUCTIONS["general"])
+    logger.debug(
+        f"resolve_domain: category={category!r} -> domain={domain!r} "
+        f"(explicit={cat not in ('AUTO', 'NONE', '')})"
+    )
+    return domain, instruction
+
+
 def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
+
     """
     Evaluates query complexity and selects the appropriate route.
 
@@ -543,31 +686,54 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
     is_question_shape = (
         lower.endswith("?")
         or normalized.endswith("?")
-        or trimmed_norm.startswith((
-            "what is", "what are", "what was", "which ", "who is", "who was", "who invented",
-            "is ", "are ", "can you explain", "explain ", "how does", "how do i", "how do",
-            "how to", "why is", "why does", "tell me about", "difference between",
-            "compare ", "where is", "when did", "define ", "square root", "cube root", "sqrt",
-            "calculate", "solve", "evaluate", "find the", "find ", "convert", "give me", "show me"
-        ))
-        or trimmed_lower.startswith((
-            "what is", "what are", "which ", "who is", "who was", "who invented",
-            "is ", "are ", "can you explain", "explain ", "how does", "how do i",
-            "how to", "why is", "why does", "tell me about", "difference between",
-            "compare ", "where is", "when did", "define "
-        ))
+        or any(
+            trimmed_norm.startswith(q) or trimmed_lower.startswith(q)
+            for q in (
+                "what ", "who ", "which ", "where ", "when ", "why ", "how ", "whose ", "whom ",
+                "is ", "are ", "can you explain", "explain ", "tell me about", "difference between",
+                "compare ", "define ", "square root", "cube root", "sqrt",
+                "calculate", "solve", "evaluate", "find the", "find ", "convert", "give me", "show me"
+            )
+        )
     )
 
     has_complex_signals = any(k in lower for k in (
         "should i", "design", "architect", "scalable", "multi-tenant", "production",
-        "saas", "50,000", "50000", "startup", "strategy", "roadmap", "decision framework",
+        "saas", "50,000", "50000", "strategy", "roadmap", "decision framework",
         "trade-off", "tradeoff", "trade-offs", "considering", "evaluat", "synthesiz",
         "multi-agent", "rag", "benchmark-style", "parents want me", "research-backed",
         "financial situation", "career and entrepreneurship", "scientific explanations",
         "plan for", "recommend one with", "edge cases", "with examples", "implementation plan",
         "benchmarks", "pricing", "providers", "differently despite", "launching",
         "convergence", "numerical stability", "causal evidence", "12-month"
-    )) or (requested_depth == "deep" and len(lower) > 50)
+    )) or ("startup" in lower and any(w in lower for w in ("strategy", "market", "pricing", "opportunity", "launch", "investor", "valuation", "business", "choose", "versus", "or", "recommend", "analyze", "risks"))) or (requested_depth == "deep" and len(lower) > 50)
+
+    # Conversational follow-ups with existing conversation context
+    if context and not has_complex_signals:
+        followup_cues = (
+            "what am i", "what is he", "what is she", "what are we", "what is it",
+            "who is", "who am i", "what project", "what startup", "what name",
+            "what was", "what did", "tell me more", "how about", "why that", "is it", "can it"
+        )
+        has_followup_pronouns = any(
+            re.search(r"\b" + re.escape(w) + r"\b", lower)
+            for w in ("it", "that", "this", "he", "she", "they", "him", "her", "my", "i", "we")
+        )
+        if any(c in lower for c in followup_cues) or has_followup_pronouns or is_question_shape:
+            decision = RouteDecision(
+                route=ROUTE_SIMPLE,
+                complexity="low",
+                reasoning="Conversational follow-up resolved using existing conversation context.",
+                required_agents=SIMPLE_AGENTS,
+                confidence=0.97,
+                reasons=["conversational follow-up query", "uses existing conversation context"],
+                domain=domain if domain != "personal_career" else "general",
+                requires_external_information=False,
+                requires_multi_agent_reasoning=False,
+                requested_depth="brief",
+            )
+            _log_decision(decision)
+            return decision
 
     if not has_complex_signals and is_question_shape:
         decision = RouteDecision(
@@ -585,7 +751,24 @@ def route_request(problem: str, context: Optional[str] = None) -> RouteDecision:
         _log_decision(decision)
         return decision
 
-    # 4. Default fallback: Open-ended complex multi-agent reasoning
+    # 4. Short conversational query fallback
+    if len(lower.split()) < 15 and not has_complex_signals:
+        decision = RouteDecision(
+            route=ROUTE_SIMPLE,
+            complexity="low",
+            reasoning="Concise query without multi-criteria trade-offs or architectural scope.",
+            required_agents=SIMPLE_AGENTS,
+            confidence=0.92,
+            reasons=["concise query", "no multi-agent coordination required"],
+            domain=domain,
+            requires_external_information=False,
+            requires_multi_agent_reasoning=False,
+            requested_depth=requested_depth,
+        )
+        _log_decision(decision)
+        return decision
+
+    # 5. Default fallback: Open-ended complex multi-agent reasoning
     decision = RouteDecision(
         route=ROUTE_COMPLEX,
         complexity="high",
@@ -631,77 +814,21 @@ def is_simple_query(problem: str) -> bool:
     return route_request(problem).route == ROUTE_SIMPLE
 
 
-CANONICAL_AGENTS = [
-    "researcher",
-    "strategist",
-    "engineer",
-    "guardian",
-    "security",
-    "evaluator",
-]
-
-SIMPLE_QUERY_PREFIXES = (
-    "what is a python list",
-    "what is a list in python",
-    "what is a variable",
-    "define a ",
-    "what is the definition of",
-)
-
-
-def is_simple_factual_query(problem: str) -> bool:
+def route_agents_for_problem(problem: str, model: str = "Auto") -> List[str]:
     """
-    Identifies trivial or simple definitional questions where running full
-    system engineering and threat modelling is unnecessary.
+    Routes specialized agents based on user prompt and selected domain model.
+    Supported model options: 'Business', 'Personal', 'Software', 'Auto'.
     """
-    cleaned = problem.strip().lower()
-    if not cleaned:
-        return False
-    
-    for prefix in SIMPLE_QUERY_PREFIXES:
-        if cleaned.startswith(prefix):
-            return True
-            
-    words = cleaned.split()
-    if len(words) <= 6 and (cleaned.startswith("what is") or cleaned.startswith("define")):
-        technical_design_keywords = {
-            "design", "system", "architecture", "platform", "infrastructure",
-            "security", "patient", "clinical", "hospital", "financial", "bank", "deploy"
-        }
-        if not any(kw in words for kw in technical_design_keywords):
-            return True
-            
-    return False
-
-
-def route_agents_for_problem(
-    problem: str,
-    requested_agents: Optional[List[str]] = None,
-    allow_conditional_routing: bool = False,
-    model: Optional[str] = None,
-) -> List[str]:
-    """
-    Routes and selects which agents should run for a given problem.
-    Supports category/domain mode: "Auto", "Business", "Personal", "Software".
-    """
-    if requested_agents:
-        valid = [a.lower().strip() for a in requested_agents if a.lower().strip() in CANONICAL_AGENTS]
-        if valid:
-            return valid
-
-    if model:
-        m = model.strip().lower()
-        if m == "business":
-            return ["researcher", "strategist", "evaluator"]
-        elif m == "personal":
-            return ["researcher", "guardian", "strategist", "evaluator"]
-        elif m == "software":
-            return ["engineer", "security", "researcher", "evaluator"]
-
-    if allow_conditional_routing and is_simple_factual_query(problem):
-        return ["researcher", "evaluator"]
-
-    return list(CANONICAL_AGENTS)
+    m = (model or "Auto").strip().lower()
+    if m == "business":
+        return ["researcher", "strategist", "evaluator"]
+    elif m == "personal":
+        return ["researcher", "guardian", "strategist", "evaluator"]
+    elif m == "software":
+        return ["engineer", "security", "researcher", "evaluator"]
+    else:
+        # Default Auto: all 6 canonical agents
+        return ["researcher", "strategist", "engineer", "guardian", "security", "evaluator"]
 
 
 __all__ = [
@@ -711,12 +838,10 @@ __all__ = [
     "PERSONAL_CAREER_AGENTS",
     "BUSINESS_STRATEGY_AGENTS",
     "SIMPLE_AGENTS",
-    "CANONICAL_AGENTS",
     "RouteDecision",
     "RouterDecision",
     "Router",
     "route_request",
     "is_simple_query",
-    "is_simple_factual_query",
     "route_agents_for_problem",
 ]

@@ -60,6 +60,7 @@ class ChatMessageRecord(BaseModel):
     user_id: str
     role: Literal["user", "assistant", "system"]
     content: str
+    extra_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_utc_now_iso)
 
 

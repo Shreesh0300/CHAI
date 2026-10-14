@@ -7,3 +7,180 @@ datasource db {
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
+
+// ------------------------------------------------------------
+// 1. User Profiles (Auth & Preferences)
+// ------------------------------------------------------------
+model Profile {
+  id         String   @id @default(uuid())
+  email      String?
+  fullName   String?  @map("full_name")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("profiles")
+}
+
+// ------------------------------------------------------------
+// 2. Multi-Agent Solve Requests
+// ------------------------------------------------------------
+model SolveRequest {
+  id             String        @id @default(uuid())
+  userId         String?       @map("user_id")
+  problem        String
+  status         String        @default("pending")
+  selectedAgents Json          @default("[]") @map("selected_agents")
+  finalAnswer    String?       @map("final_answer")
+  limitations    Json          @default("[]")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  completedAt    DateTime?     @map("completed_at")
+
+  agentOutputs     AgentOutput[]
+  evaluations      Evaluation[]
+  securityFindings SecurityFinding[]
+  sources          Source[]
+
+  @@map("solve_requests")
+}
+
+model AgentOutput {
+  id              String       @id @default(uuid())
+  requestId       String       @map("request_id")
+  agentName       String       @map("agent_name")
+  status          String       @default("pending")
+  output          Json?
+  errorMessage    String?      @map("error_message")
+  executionTimeMs Int?         @map("execution_time_ms")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  completedAt     DateTime?    @map("completed_at")
+
+  solveRequest    SolveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("agent_outputs")
+}
+
+model Evaluation {
+  id                  String       @id @default(uuid())
+  requestId           String       @map("request_id")
+  consistencyScore    Decimal?     @map("consistency_score") @db.Decimal(5, 2)
+  completenessScore   Decimal?     @map("completeness_score") @db.Decimal(5, 2)
+  conflicts           Json         @default("[]")
+  missingRequirements Json         @default("[]") @map("missing_requirements")
+  evaluationOutput    Json?        @map("evaluation_output")
+  createdAt           DateTime     @default(now()) @map("created_at")
+
+  solveRequest        SolveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("evaluations")
+}
+
+model SecurityFinding {
+  id             String       @id @default(uuid())
+  requestId      String       @map("request_id")
+  severity       String?
+  category       String?
+  finding        String?
+  recommendation String?
+  resolved       Boolean      @default(false)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  solveRequest   SolveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("security_findings")
+}
+
+model Source {
+  id         String       @id @default(uuid())
+  requestId  String       @map("request_id")
+  title      String?
+  url        String?
+  sourceType String?      @map("source_type")
+  metadata   Json         @default("{}")
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  solveRequest SolveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("sources")
+}
+
+// ------------------------------------------------------------
+// 3. Conversations & Chat History
+// ------------------------------------------------------------
+model Conversation {
+  id        String    @id
+  userId    String    @map("user_id")
+  title     String    @default("New Conversation")
+  mode      String    @default("ask")
+  layout    String    @default("chat")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  messages  Message[]
+  files     FileRecord[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id
+  conversationId String       @map("conversation_id")
+  userId         String       @map("user_id")
+  role           String       // 'user', 'assistant', 'system'
+  content        String       @db.Text
+  attachments    Json         @default("[]")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ------------------------------------------------------------
+// 4. File Records (Uploaded Files & Attachments)
+// ------------------------------------------------------------
+model FileRecord {
+  id             String        @id @default(uuid())
+  userId         String        @map("user_id")
+  conversationId String?       @map("conversation_id")
+  fileName       String        @map("file_name")
+  fileType       String?       @map("file_type")
+  fileSize       BigInt?       @map("file_size")
+  fileUrl        String?       @map("file_url")
+  storagePath    String?       @map("storage_path")
+  metadata       Json          @default("{}")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@map("files")
+}
+
+// ------------------------------------------------------------
+// 5. Long-term Memories & Personalization
+// ------------------------------------------------------------
+model Memory {
+  id         String   @id
+  userId     String   @map("user_id")
+  memory     String   @db.Text
+  category   String   @default("general")
+  importance Int      @default(3)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("memories")
+}
+
+model UserProfile {
+  userId      String   @id @map("user_id")
+  name        String?
+  email       String?
+  role        String?
+  goals       Json     @default("[]")
+  interests   Json     @default("[]")
+  preferences Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("user_profiles")
+}

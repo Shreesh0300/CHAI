@@ -76,3 +76,27 @@ def test_supabase_client_configured_initializes():
                 "test-service-key-12345",
             )
     reset_supabase_client()
+
+
+def test_supabase_client_falls_back_to_anon_key():
+    """Verify get_supabase_client falls back to SUPABASE_ANON_KEY when service key is empty."""
+    reset_supabase_client()
+    with patch.dict(
+        os.environ,
+        {
+            "SUPABASE_URL": "https://testproject.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "",
+            "SUPABASE_ANON_KEY": "anon-key-abcde-12345",
+        },
+    ):
+        with patch("backend.shared.supabase_client.create_client") as mock_create:
+            mock_instance = MagicMock()
+            mock_create.return_value = mock_instance
+            client = get_supabase_client()
+            assert client is not None
+            mock_create.assert_called_once_with(
+                "https://testproject.supabase.co",
+                "anon-key-abcde-12345",
+            )
+    reset_supabase_client()
+

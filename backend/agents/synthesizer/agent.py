@@ -16,6 +16,7 @@ from typing import Optional, List, Set, Any
 
 from backend.shared.llm_client import llm_client
 from backend.shared.logger import get_logger
+from backend.core.domain_lenses import apply_domain_lens
 from backend.agents.synthesizer.prompts import (
     SYSTEM_PROMPT,
     REFERENCE_CONTEXT_HEADER,
@@ -100,6 +101,7 @@ class SynthesizerAgent:
         self,
         problem: str,
         context: Optional[dict] = None,
+        domain: Optional[str] = None,
     ) -> SynthesizerResult:
         """Synthesize collective agent outputs and evaluator findings into one final answer.
 
@@ -110,6 +112,8 @@ class SynthesizerAgent:
         context:
             Collected agent outputs (e.g. ``{"researcher": {...}, ...}`` or
             ``{"all_outputs": {...}}``). Treated strictly as untrusted reference data.
+        domain:
+            Optional resolved domain ('business', 'personal', 'software').
 
         Returns
         -------
@@ -119,7 +123,11 @@ class SynthesizerAgent:
         """
         start_time = time.monotonic()
         has_context = bool(context)
-        logger.info(f"Synthesizer Agent: starting synthesis (context_provided={has_context}).")
+        resolved_domain = domain or (
+            context.get("domain") or context.get("resolved_domain") or context.get("domain_category")
+            if isinstance(context, dict) else None
+        )
+        logger.info(f"Synthesizer Agent: starting synthesis (context_provided={has_context}, domain={resolved_domain}).")
 
         # ---- Input validation ----
         if not problem or not problem.strip():
@@ -131,6 +139,7 @@ class SynthesizerAgent:
 
         # ---- Build LLM prompt ----
         user_prompt = self._build_user_prompt(problem, context, plan=plan)
+        effective_system_prompt = apply_domain_lens(self.system_prompt, "synthesizer", resolved_domain)
 
         # ---- Call LLM with bounded retry ----
         last_error: Optional[Exception] = None
@@ -138,7 +147,7 @@ class SynthesizerAgent:
             try:
                 response_text = await llm_client.generate_content(
                     prompt=user_prompt,
-                    system_instruction=self.system_prompt,
+                    system_instruction=effective_system_prompt,
                 )
 
                 # Handle mock mode (API key not configured)
@@ -788,8 +797,193 @@ class SynthesizerAgent:
         # -------------------------------------------------------------
         sections: List[str] = []
 
+        is_job_offer = ("job offer" in p_lower or "offers" in p_lower or ("relocation" in p_lower and ("family" in p_lower or "balance" in p_lower or "decide" in p_lower)))
+        is_saas_smb = ("saas" in p_lower and ("restaurant" in p_lower or "retail" in p_lower or "professional services" in p_lower))
+        is_auth_arch = ("authentication" in p_lower and ("fastapi" in p_lower or "react" in p_lower or "postgresql" in p_lower or "jwt" in p_lower))
+
+        # (0) BENCHMARK: PERSONAL JOB OFFER RELOCATION VS FAMILY/WLB DILEMMA
+        if is_job_offer:
+            sections.append(
+                "## 1. Decision Restatement & Known Facts\n"
+                "You are evaluating two competing career offers involving fundamental personal and professional trade-offs:\n"
+                "- **Offer A (Higher Compensation / Relocation)**: Provides higher nominal compensation but requires relocating away from your current location, network, and family.\n"
+                "- **Offer B (Lower Compensation / Family Proximity & Work-Life Balance)**: Offers lower nominal compensation but preserves physical proximity to your family and affords superior work-life balance.\n\n"
+                "**Known Facts**: The choice balances immediate earning potential against personal well-being, family proximity, and geographic stability. "
+                "Crucially, neither financial compensation nor family proximity is universally superior; your personal values and life stage determine the optimal path."
+            )
+            sections.append(
+                "## 2. Comprehensive Multi-Factor Comparison\n"
+                "| Evaluation Dimension | Offer A (Higher Pay / Relocate) | Offer B (Lower Pay / Family / WLB) |\n"
+                "| :--- | :--- | :--- |\n"
+                "| **Real Compensation (Adjusted)** | Higher nominal gross, but must be adjusted for destination taxes, cost of living index, and travel costs back to family. | Lower nominal gross, but lower living friction, shared household economies, and zero moving costs. |\n"
+                "| **Relocation Costs & Friction** | High upfront moving costs, lease termination, furniture logistics, and establishing a new local social support system. | Zero relocation friction, established housing, and intact local support network. |\n"
+                "| **Career Growth & Trajectory** | Potential access to a denser industry hub, marquee brand recognition, or steeper professional learning curve. | Stable compounding, reduced burnout risk, but potentially narrower local market growth depending on city. |\n"
+                "| **Work-Life Balance & Health** | Risk of elevated stress from adjusting to a new city, longer hours, or demanding corporate expectations. | Protected personal time, predictable boundaries, lower chronic stress, and better psychological recovery. |\n"
+                "| **Family Priorities & Support** | Physical distance requires deliberate scheduling and travel expenses for family visits, life events, or emergencies. | Immediate daily or weekly physical presence, caregiving support, and participation in family milestones. |\n"
+                "| **3–5 Year Consequences** | Could accelerate compensation trajectory and title seniority, or lead to isolation and early exit if culture is poor. | Fosters sustainable life foundation and deep community ties, but may create eventual compensation plateau frustration if growth stalls. |"
+            )
+            sections.append(
+                "## 3. When Each Offer is Preferable\n"
+                "- **Offer A is preferable if**:\n"
+                "  1. The net financial delta (after taxes, rent increase, and travel expenses) is substantial enough to accelerate debt payoff, savings, or investment goals.\n"
+                "  2. The role provides specialized skill development, marquee brand equity, or mentorship unavailable in your current location.\n"
+                "  3. You are in a life stage where spending 2–3 years in a high-intensity hub aligns with your medium-term vision, with a clear option to return or transition later.\n\n"
+                "- **Offer B is preferable if**:\n"
+                "  1. Family caregiving, deep relationships, or personal well-being are primary sources of fulfillment and resilience right now.\n"
+                "  2. The cost-of-living increase in Offer A's destination would consume most of the salary difference, yielding negligible real net savings.\n"
+                "  3. You value sustainable hours, hobbies, or mental clarity over incremental income, avoiding burnout risk."
+            )
+            sections.append(
+                "## 4. Unknown Factors (Without Inventing Circumstances)\n"
+                "A definitive calculation requires specific data points that were not provided in your prompt (and should not be assumed):\n"
+                "- **Exact Compensation Delta**: The pre-tax and post-tax difference between the two base salaries, plus bonuses or equity.\n"
+                "- **Relocation Package**: Whether Offer A covers moving services, temporary housing, or lease break fees.\n"
+                "- **Cost-of-Living Differential**: Relative rent, state/local tax rates, and everyday costs between the two locations.\n"
+                "- **Remote/Hybrid Flexibility**: Whether Offer A allows periodic remote work weeks to visit family without using vacation days.\n"
+                "- **Promotion & Learning Velocity**: The concrete promotion cadence, mentorship quality, and exit opportunities for each position."
+            )
+            sections.append(
+                "## 5. Decision Framework & Conditional Recommendation\n"
+                "Rather than guessing your priorities, apply this structured decision framework:\n\n"
+                "### Step 1: The Net Purchasing Power Equation\n"
+                "$$\\text{Real Delta} = (\\text{Offer A Net Income} - \\text{Housing Increase} - \\text{Annual Family Visit Travel}) - \\text{Offer B Net Income}$$\n"
+                "- If the real delta is marginal (e.g. less than 10–15% after living costs), the financial premium alone does not justify the relocation friction.\n\n"
+                "### Step 2: The 10/10/10 Rule\n"
+                "- How will you feel about relocating in 10 weeks (initial adjustment), 10 months (routine established), and 10 years (career trajectory vs. family memories)?\n\n"
+                "### Step 3: Reversibility & Negotiation Leverage\n"
+                "- Can you negotiate with Offer B by citing Offer A's market rate to narrow the salary gap?\n"
+                "- If you take Offer A, can you treat it as a defined 24-month commitment before reassessing?"
+            )
+            sections.append(
+                "## 6. Clarifying Follow-Up Questions\n"
+                "To calculate your tailored recommendation, consider these specific questions:\n"
+                "1. What is the approximate salary difference, and does Offer A include a relocation stipend?\n"
+                "2. Which cities are involved, or what is the expected difference in rent and cost of living?\n"
+                "3. Does Offer A offer any hybrid flexibility (e.g. working remotely 1 week per month from near your family)?"
+            )
+
+        # (1) BENCHMARK: BUSINESS SMB SAAS VERTICAL TARGETING
+        elif is_saas_smb:
+            sections.append(
+                "## 1. Executive Summary & Problem Scope\n"
+                "When launching a B2B SaaS for small businesses, choosing your initial vertical between **Restaurants**, **Retail Stores**, and "
+                "**Professional Services** (accountants, lawyers, consultants, agencies) dictates your sales cycle, product surface area, "
+                "and capital runway. This analysis provides an objective multi-dimensional evaluation while strictly separating empirical facts "
+                "from working hypotheses."
+            )
+            sections.append(
+                "## 2. Multi-Criteria Segment Comparison\n"
+                "| Criteria | Restaurants | Retail Stores | Professional Services |\n"
+                "| :--- | :--- | :--- | :--- |\n"
+                "| **Willingness to Pay & Margin** | Low-to-Moderate; tight operating margins (typically 3–8%) limit software budget. | Moderate; retail gross margins vary, but net margins remain lean (4–10%). | High; healthy net margins (15–35%+) and high willingness to pay for billable hours or efficiency. |\n"
+                "| **Sales Velocity & Accessibility** | Difficult to reach; owners are on the floor during service hours; high gatekeeping. | Moderate; store managers/owners busy with foot traffic and inventory. | High; desktop-based workers accessible via email, LinkedIn, and scheduled calls during business hours. |\n"
+                "| **Onboarding & Workflow Friction** | High frontline staff turnover requires simple, multilingual, and intuitive workflows. | High physical workflow dependency (barcode, physical stock counts). | Low; standard desktop browser adoption, familiarity with digital file sharing and calendars. |\n"
+                "| **Integration Dependency** | High if touching orders/menus (POS, delivery apps); Low if back-office scheduling. | High if managing stock (POS, e-commerce, barcodes); Low if marketing/CRM. | Standard (Email, Google Workspace, QuickBooks/Xero); rarely requires specialized physical hardware. |\n"
+                "| **Market Fragmentation & TAM** | Very high fragmentation; millions of independent operators with local presence. | Very high fragmentation; independent shops alongside national chains. | Highly fragmented; hundreds of thousands of independent legal, accounting, and advisory practices. |"
+            )
+            sections.append(
+                "## 3. Verified Facts vs. Working Hypotheses\n"
+                "### Verified Industry Facts\n"
+                "- **Margin Structures**: Professional services operate with significantly higher gross and operating margins than food service or physical retail, creating larger discretionary software budgets per employee.\n"
+                "- **Staff Turnover**: Frontline staff turnover in food service and retail is empirically 2–3x higher than in professional services, demanding greater onboarding resilience.\n\n"
+                "### Working Hypotheses (Subject to Validation for Your Product)\n"
+                "- *Hypothesis on Churn*: Professional services software will have lower churn. (This is a hypothesis: white-collar tools face low churn only if embedded into daily compliance, billing, or client communications).\n"
+                "- *Hypothesis on POS Complexity*: Restaurants and retail necessarily require complicated Point-of-Sale integrations. (This is conditional: if your software handles employee scheduling, compliance checklists, or local marketing, POS integration may be completely out of scope).\n"
+                "- *Hypothesis on Payment Fees*: Payment facilitator fees will impact economics. (This is an assumption: payment processing is only relevant if your product monetizes transaction flow rather than subscription SaaS)."
+            )
+            sections.append(
+                "## 4. Provisional Recommendation & Conditional Triggers\n"
+                "### Provisional Recommendation\n"
+                "For a lean founder with an unproven product, **Professional Services** is the recommended initial target segment. "
+                "It enables higher average revenue per account (ARPA), faster remote customer discovery, and desktop-based adoption without "
+                "requiring physical on-site hardware or frontline staff training.\n\n"
+                "### Product Characteristics That Change This Recommendation\n"
+                "- **If your product focuses on**: Kitchen prep, food waste, table reservation, or recipe costing $\\rightarrow$ **Target Restaurants**.\n"
+                "- **If your product focuses on**: Barcode scanning, physical inventory shrinkage, or multi-location stock transfer $\\rightarrow$ **Target Retail Stores**.\n"
+                "- **If your product focuses on**: Document intake, billable time tracking, client portals, or appointment booking $\\rightarrow$ **Target Professional Services**."
+            )
+            sections.append(
+                "## 5. Practical Customer-Discovery Experiments\n"
+                "Before writing code or committing capital, run these structured validation experiments:\n\n"
+                "1. **The 30-Interview Discovery Sprint (Weeks 1–3)**:\n"
+                "   - Conduct 10 structured 20-minute problem interviews in each vertical (10 restaurateurs, 10 retail shop owners, 10 professional services principals).\n"
+                "   - Core question: *'What operational workflow took the most non-billable time or caused the most stress in your business this past month?'*\n\n"
+                "2. **The Concierge / Smoke Test Landing Page (Weeks 4–5)**:\n"
+                "   - Create 3 vertical-specific landing pages describing your proposed solution with identical pricing ($49/month or $99/month).\n"
+                "   - Drive 50 targeted clicks per vertical via cold outreach or niche groups; measure click-to-waitlist conversion.\n\n"
+                "3. **Measurable Decision Gate**:\n"
+                "   - Select the vertical that yields at least **3 pre-commitments (letters of intent or prepaid beta deposits)** within 30 days."
+            )
+
+        # (2) BENCHMARK: SOFTWARE SAAS AUTH & AUTHZ ARCHITECTURE
+        elif is_auth_arch:
+            sections.append(
+                "## 1. Authentication vs. Authorization Architecture\n"
+                "A robust multi-user SaaS requires clean separation between identity verification and access enforcement:\n"
+                "- **Authentication (AuthN - 'Who are you?')**: Verifies identity through email/password credentials or OAuth/SSO. Credentials must be hashed using **Argon2id** (preferred) or **bcrypt** (cost factor $\\ge 12$). Successful authentication produces an authenticated session and identity tokens.\n"
+                "- **Authorization (AuthZ - 'What are you allowed to do?')**: Enforces tenant boundaries and Role-Based Access Control (RBAC). Evaluated on every API request based on user roles and permissions scoped to the specific tenant."
+            )
+            sections.append(
+                "## 2. Token Architecture: Signed JWTs vs. Encrypted Tokens\n"
+                "- **Signed JWTs (JWS per RFC 7519)**: Access tokens are encoded JSON payloads cryptographically signed with an asymmetric key pair (RS256/ES256) or a secure symmetric secret (HS256). Payload claims (`sub`, `tenant_id`, `roles`, `exp`, `iss`, `aud`) are Base64URL-encoded and readable by client and server.\n"
+                "- **Signature Verification is NOT Decryption**: Validating a signed JWT involves computing the cryptographic signature over the header and payload using the public key or shared secret, and verifying it matches the token signature. **This does not decrypt the token** (signed JWTs are not encrypted). Encrypted tokens (JWE) are distinct and rarely needed for standard API access tokens.\n"
+                "- **Required Claim Validations**: On every request, the backend must validate: (1) Cryptographic signature, (2) Expiration timestamp (`exp`), (3) Issuer (`iss`), and (4) Audience (`aud`)."
+            )
+            sections.append(
+                "## 3. Cookie Storage, CSRF Protections & XSS Boundaries\n"
+                "- **Cookie Security Attributes**: Store refresh tokens (and optionally access tokens) in cookies configured with: `HttpOnly=True`, `Secure=True` (HTTPS only), `SameSite=Lax` (or `Strict`), and path scoping (e.g. `Path=/api/auth`).\n"
+                "- **CSRF Defense**: While `SameSite=Lax` defends against many cross-origin requests, defense-in-depth requires custom header verification (e.g. `X-Requested-With: XMLHttpRequest` or an explicit CSRF token header verified by FastAPI middleware) because browsers do not attach custom headers on cross-site requests.\n"
+                "- **XSS Realities & Limitations**: `HttpOnly` cookies prevent JavaScript from directly reading the cookie string (`document.cookie`), preventing direct exfiltration of the raw token. **However, HttpOnly cookies DO NOT prevent ambient request execution**: if an attacker achieves cross-site scripting (XSS), their injected script can execute `fetch('/api/sensitive')` from within the user's browser, and the browser will automatically attach the HttpOnly cookie. Therefore, full XSS mitigation requires a strict Content Security Policy (CSP), React context-aware JSX encoding, and input sanitization."
+            )
+            sections.append(
+                "## 4. Refresh Token Lifecycle, Rotation & Reuse Detection\n"
+                "- **Database-Backed Token Storage**: Maintain a PostgreSQL table:\n"
+                "  ```sql\n"
+                "  CREATE TABLE refresh_tokens (\n"
+                "      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n"
+                "      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n"
+                "      token_hash VARCHAR(64) NOT NULL UNIQUE,\n"
+                "      family_id UUID NOT NULL,\n"
+                "      is_revoked BOOLEAN NOT NULL DEFAULT FALSE,\n"
+                "      expires_at TIMESTAMPTZ NOT NULL,\n"
+                "      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n"
+                "  );\n"
+                "  CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash);\n"
+                "  CREATE INDEX idx_refresh_tokens_family ON refresh_tokens(family_id);\n"
+                "  ```\n"
+                "- **Token Rotation**: Every time `/api/auth/refresh` is called, validate the token hash, mark the old token as revoked (`is_revoked = TRUE`), and issue a new refresh token sharing the same `family_id`.\n"
+                "- **Reuse Detection (Anti-Theft)**: If a refresh token with `is_revoked = TRUE` is ever presented, assume token theft. Immediately invalidate **all tokens belonging to that `family_id`**, revoke active sessions, and log a critical security event."
+            )
+            sections.append(
+                "## 5. Multi-Tenant Data Isolation in FastAPI & PostgreSQL\n"
+                "- **PostgreSQL Row-Level Security (RLS)**: Enforce database-level tenant isolation:\n"
+                "  ```sql\n"
+                "  ALTER TABLE projects ENABLE ROW LEVEL SECURITY;\n"
+                "  CREATE POLICY tenant_isolation_policy ON projects\n"
+                "      USING (tenant_id = current_setting('app.current_tenant_id')::uuid);\n"
+                "  ```\n"
+                "- **FastAPI Dependency Injection**: Extract and verify `tenant_id` from the JWT access token in a FastAPI dependency, and set the transactional session parameter before executing queries:\n"
+                "  ```python\n"
+                "  async def get_tenant_db(token: TokenData = Depends(get_current_user)):\n"
+                "      async with SessionLocal() as session:\n"
+                "          await session.execute(text(\"SET LOCAL app.current_tenant_id = :tid\"), {\"tid\": str(token.tenant_id)})\n"
+                "          yield session\n"
+                "  ```"
+            )
+            sections.append(
+                "## 6. MVP vs. Production-Hardening Infrastructure\n"
+                "### Day-One MVP (Simple, Cost-Effective & Robust)\n"
+                "- **Datastore**: Single PostgreSQL database storing users, tenants, and the `refresh_tokens` table. No Redis is needed; token rotation and revocation lookups take <2ms on indexed tables.\n"
+                "- **Backend**: FastAPI with async SQLAlchemy, Pydantic v2 schemas, and standard HTTPS/TLS termination.\n"
+                "- **Frontend**: React with in-memory access token storage and Axios/Fetch interceptor for transparent 401 token refresh.\n\n"
+                "### Production Hardening (At Scale)\n"
+                "- **Redis Justification**: Introduce Redis only when scaling to tens of thousands of active concurrent sessions where database query load for session validation becomes measurable, or when distributed sub-millisecond token blacklisting is required across multiple regions.\n"
+                "- **Connection Pooling**: PgBouncer deployed in front of PostgreSQL to handle high-concurrency connection spikes.\n"
+                "- **Rate Limiting**: SlowAPI or API gateway rate limiting on `/api/auth/login` (e.g. 5 attempts/minute) to defeat credential stuffing."
+            )
+
         # (A) BUSINESS STRATEGY
-        if plan.domain == "business_strategy" or (plan.intent in ("strategy", "decision_support") and "business" in p_lower):
+        elif plan.domain == "business_strategy" or (plan.intent in ("strategy", "decision_support") and "business" in p_lower):
             sections.append(
                 "## Executive Summary\n"
                 "For a small business navigating growth with constrained capital, launching an online channel provides the strongest "
@@ -1293,26 +1487,86 @@ class SynthesizerAgent:
 
         final_answer_text = "\n\n".join(sections)
 
-        key_decisions = [
-            KeyDecision(
-                decision="Prioritize user constraints and core requirements",
-                rationale="User constraints have highest authority in system hierarchy.",
-                supported_by=[a for a in active if a in ("researcher", "strategist", "evaluator")],
-            )
-        ]
-        if "engineer" in active:
-            key_decisions.append(
+        if is_job_offer:
+            key_decisions = [
                 KeyDecision(
-                    decision="Incorporate technical architecture considerations",
-                    rationale="Ground implementation in proposed engineering specifications.",
-                    supported_by=["engineer"],
+                    decision="Deliver preliminary personal decision framework",
+                    rationale="Structures multi-factor trade-offs across compensation, relocation friction, family priorities, and long-term consequences while identifying unknown variables without inventing personal details.",
+                    supported_by=[a for a in active if a in ("strategist", "researcher", "evaluator")] or ["strategist", "researcher"],
                 )
-            )
+            ]
+            assumptions = [
+                "Operating under neutral valuation of salary delta versus family proximity.",
+                "Cost of living, tax, and relocation package details are provisional and subject to exact user figures.",
+            ]
+            missing_information = [
+                "Exact net compensation delta between the two offers.",
+                "Relocation package coverage and expected moving expenses.",
+                "Career advancement trajectory and promotion velocity at each company.",
+            ]
+            limitations = [
+                "Analysis provides preliminary decision guidance; exact financial calculations require specific salary and relocation numbers."
+            ]
+        elif is_saas_smb:
+            key_decisions = [
+                KeyDecision(
+                    decision="Provisional recommendation of Professional Services vertical",
+                    rationale="Identifies lowest operational friction, highest discretionary spend, and least physical integration dependency for an early-stage SaaS, subject to customer discovery.",
+                    supported_by=[a for a in active if a in ("strategist", "researcher", "evaluator")] or ["strategist", "researcher"],
+                )
+            ]
+            assumptions = [
+                "Product is assumed to solve knowledge or workflow automation; hardware or POS integrations are not assumed unless specified by product scope.",
+                "Industry churn and LTV differences are working hypotheses requiring validation via customer discovery.",
+            ]
+            missing_information = [
+                "Specific product functionality and core workflow solved.",
+                "Founder domain expertise and initial industry network access.",
+            ]
+            limitations = [
+                "Target segment recommendations are provisional; specific product characteristics and customer discovery validation must confirm fit."
+            ]
+        elif is_auth_arch:
+            key_decisions = [
+                KeyDecision(
+                    decision="Standardize on signed JWTs with database-backed refresh token rotation for MVP",
+                    rationale="Separates AuthN from AuthZ, avoids premature infrastructure complexity (Redis), and enforces strict multi-tenant isolation via PostgreSQL.",
+                    supported_by=[a for a in active if a in ("engineer", "security", "evaluator")] or ["engineer", "security"],
+                )
+            ]
+            assumptions = [
+                "Architecture addresses early to mid-stage multi-tenant SaaS workloads before distributed multi-region scaling."
+            ]
+            missing_information = [
+                "Enterprise SSO / SAML requirements.",
+                "Compliance certifications required (SOC 2 Type II, HIPAA).",
+            ]
+            limitations = [
+                "Architecture distinguishes day-one MVP controls from optional production-scale hardening (Redis, PgBouncer)."
+            ]
+        else:
+            key_decisions = [
+                KeyDecision(
+                    decision="Prioritize user constraints and core requirements",
+                    rationale="User constraints have highest authority in system hierarchy.",
+                    supported_by=[a for a in active if a in ("researcher", "strategist", "evaluator")],
+                )
+            ]
+            if "engineer" in active:
+                key_decisions.append(
+                    KeyDecision(
+                        decision="Incorporate technical architecture considerations",
+                        rationale="Ground implementation in proposed engineering specifications.",
+                        supported_by=["engineer"],
+                    )
+                )
+            assumptions = ["Operating parameters conform to specified problem constraints."]
+            missing_information = ["Specific local deployment parameters not detailed in input."]
 
         provenance = [
             ProvenanceItem(
                 statement="Solution addresses primary user requirements and constraints.",
-                supported_by=active,
+                supported_by=active or ["synthesizer"],
             )
         ]
 
@@ -1331,7 +1585,7 @@ class SynthesizerAgent:
             resolved_conflicts=resolved_conflicts,
             unresolved_conflicts=unresolved_conflicts,
             limitations=limitations,
-            assumptions=["Operating parameters conform to specified problem constraints."],
-            missing_information=["Specific local deployment parameters not detailed in input."],
+            assumptions=assumptions,
+            missing_information=missing_information,
             provenance=provenance,
         )

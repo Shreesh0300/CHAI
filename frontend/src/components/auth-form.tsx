@@ -4,6 +4,7 @@ import { type FormEvent, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { LoaderCircle, Sparkles, UserRound } from 'lucide-react'
+import { ChaiLogo } from '@/components/chai-logo'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -138,12 +139,8 @@ export function AuthForm({
       />
 
       {!isCover && (
-        <div className="mb-7 flex flex-col items-center text-center">
-          <span className="mb-3 grid size-11 place-items-center rounded-2xl border border-border/70 bg-card/80 text-primary shadow-sm">
-            <Sparkles aria-hidden="true" className="size-5" />
-          </span>
-          <p className="text-lg font-semibold tracking-tight">CHAI</p>
-          <p className="mt-1 text-xs text-muted-foreground">Autonomous Framework</p>
+        <div className="mb-7 flex flex-col items-center justify-center text-center">
+          <ChaiLogo variant="full" size="lg" className="justify-center" />
         </div>
       )}
 

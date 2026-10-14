@@ -58,7 +58,7 @@ PURE_KNOWLEDGE_PATTERNS = [
 
 def extract_keywords(text: str) -> Set[str]:
     """Tokenizes text into normalized keywords without stopwords."""
-    words = re.findall(r"\b[a-zA-Z0-9_\-]{3,}\b", text.lower())
+    words = re.findall(r"\b[a-zA-Z0-9_\-]{2,}\b", text.lower())
     return {w for w in words if w not in STOPWORDS}
 
 
@@ -74,8 +74,8 @@ class MemoryRetriever:
         stripped = query.strip()
         for pattern in PURE_KNOWLEDGE_PATTERNS:
             if pattern.search(stripped):
-                # But if the query mentions personal words like "my", "i am", "mine", allow memory
-                if any(k in extract_keywords(stripped) for k in ["my", "i", "mine", "project", "startup"]):
+                # But if the query mentions personal words like "my", "i", "mine", "project", allow memory
+                if re.search(r"\b(my|i|me|mine|project|startup|build|building|name|samarth)\b", stripped, re.IGNORECASE):
                     return False
                 return True
         return False

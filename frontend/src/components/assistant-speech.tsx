@@ -34,9 +34,12 @@ import {
   playAssistantAudio,
   stopAssistantAudio,
   isAssistantAudioPlaying,
+  cleanTextForSpeech,
+  cleanTextForDisplay,
 } from "@/lib/assistant-audio"
 import { useWakeWord } from "@/hooks/use-wake-word"
 import { detectWakePhrase } from "@/lib/wake-word"
+import { ChaiLogo } from "@/components/chai-logo"
 import { cn } from "@/lib/utils"
 
 const API_BASE = "http://localhost:8000"
@@ -105,9 +108,9 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
   }, [])
 
   // Voice & AI States
-  const [voiceState, setVoiceState] = useState<AssistantVoiceState>("listening")
+  const [voiceState, setVoiceState] = useState<AssistantVoiceState>("idle")
   const [subtitle, setSubtitle] = useState<string>(
-    "Listening to your voice...",
+    "Tap mic or say \"Hey CHAI\" to start...",
   )
   const [inputValue, setInputValue] = useState("")
   const [isAudioMuted, setIsAudioMuted] = useState(false)
@@ -124,31 +127,28 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
   const [commandResults, setCommandResults] = useState<CommandResult[]>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  // Real Web Audio API & MediaRecorder state
+  // Real Web Audio API visualizer & Voice State Machine refs
   const [audioLevel, setAudioLevel] = useState(0)
   const [audioAnalyser, setAudioAnalyser] = useState<AnalyserNode | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
   const animationFrameRef = useRef<number | null>(null)
-  const isListeningRef = useRef(true)
-  const isRecordingRef = useRef(false)
-  const hasSpeechRef = useRef(false)
-  const silenceStartRef = useRef<number | null>(null)
-  const recordingStartRef = useRef(0)
-  const liveSpeechTranscriptRef = useRef("")
   const activeSpeechRecRef = useRef<any>(null)
 
-  // Silence & Audio Constants (1.5s silence duration for snappy conversational response)
-  const SILENCE_DURATION_MS = 1500
-  const SPEECH_RMS_THRESHOLD = 0.022
-  const SILENCE_RMS_THRESHOLD = 0.014
-  const MIN_RECORDING_MS = 500
-  const MAX_RECORDING_MS = 25000
+  // Robust Lifecycle & Silence Coordination
+  const isMountedRef = useRef(true)
+  const isProcessingRef = useRef(false)
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const currentTranscriptRef = useRef("")
+  const hasSpeechRef = useRef(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
-  // Function reference forwarders to eliminate stale closures
-  const startAudioRecordingRef = useRef<() => Promise<void>>(async () => {})
+  // Silence Duration: 2.5 seconds of continuous silence after speech
+  const SILENCE_TIMEOUT_MS = 2500
+
+  // Forwarder refs to eliminate stale closures
+  const startListeningRef = useRef<() => Promise<void>>(async () => {})
+  const finalizeAndSubmitRef = useRef<() => void>(() => {})
   const handleProcessQueryRef = useRef<(query: string) => Promise<void>>(async () => {})
   const speakTextRef = useRef<(text: string, lang?: string) => Promise<void>>(async () => {})
 
@@ -182,100 +182,164 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
     { key: "Engine Protocol", value: "WebSocket / Supabase Edge Synced", category: "context" },
   ])
 
-  // Stop All Audio Capture & Processing
+  // Clear Silence Timer helper
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+  }, [])
+
+  // Stop All Audio Capture & Speech Recognition Hardware Tracks Cleanly
   const stopAudioCapture = useCallback(() => {
-    isRecordingRef.current = false
+    clearSilenceTimer()
+
+    // 1. Abort active speech recognition session immediately
     if (activeSpeechRecRef.current) {
       try {
+        activeSpeechRecRef.current.onresult = null
+        activeSpeechRecRef.current.onerror = null
+        activeSpeechRecRef.current.onspeechend = null
+        activeSpeechRecRef.current.onend = null
         activeSpeechRecRef.current.abort()
       } catch {}
       activeSpeechRecRef.current = null
     }
+
+    // 2. Cancel audio visualizer animation frame
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current)
       animationFrameRef.current = null
     }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      try {
-        mediaRecorderRef.current.stop()
-      } catch {}
-      mediaRecorderRef.current = null
-    }
+
+    // 3. Stop all physical microphone tracks
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      try {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      } catch {}
       mediaStreamRef.current = null
     }
+
+    // 4. Close audio context safely
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close().catch(() => {})
+      try {
+        audioContextRef.current.close().catch(() => {})
+      } catch {}
       audioContextRef.current = null
     }
+
     setAudioAnalyser(null)
     setAudioLevel(0)
-  }, [])
+  }, [clearSilenceTimer])
 
-  // Robust TTS Player using chunked streaming & local interrupt listener
+  // Robust Text-to-Speech playback using project's existing TTS stream & SpeechSynthesis fallback
   const speakText = useCallback(
     async (textToSpeak: string, language?: string) => {
-      const cleanText = textToSpeak.trim()
+      if (!isMountedRef.current) return
+
+      // Clean text to avoid speaking raw JSON, markdown, or debug info
+      const cleanText = cleanTextForSpeech(textToSpeak)
       if (isAudioMuted || !cleanText) {
-        setVoiceState("listening")
-        if (isListeningRef.current) {
-          startAudioRecordingRef.current?.()
-        }
+        setVoiceState("idle")
+        setSubtitle(cleanText || "Response complete. Tap mic to speak.")
+        isProcessingRef.current = false
         return
       }
 
+      // Stop mic capture completely before TTS starts — assistant never hears itself
       stopAudioCapture()
       stopAssistantAudio()
 
       setVoiceState("speaking")
       setSubtitle(cleanText)
 
-      await playAssistantAudio(cleanText, language || "en", {
-        onStart: () => {
-          setVoiceState("speaking")
-        },
-        onChunkStart: (chunk) => {
-          setSubtitle(chunk)
-        },
-        onInterrupt: () => {
-          console.log("TTS interrupted: stopping audio and turning mic off")
-          stopAssistantAudio()
+      try {
+        await playAssistantAudio(cleanText, language || "en", {
+          onStart: () => {
+            if (!isMountedRef.current) return
+            setVoiceState("speaking")
+          },
+          onChunkStart: (chunk) => {
+            if (!isMountedRef.current) return
+            setSubtitle(chunk)
+          },
+          onInterrupt: () => {
+            if (!isMountedRef.current) return
+            console.log("TTS interrupted: returning to idle")
+            stopAssistantAudio()
+            stopAudioCapture()
+            setVoiceState("idle")
+            setSubtitle("Speech stopped. Tap mic to speak.")
+            isProcessingRef.current = false
+          },
+          onEnd: () => {
+            if (!isMountedRef.current) return
+            stopAudioCapture()
+            isProcessingRef.current = false
+            // Auto-relisten: restart mic after TTS like a real voice assistant
+            if (wakeWordEnabled) {
+              setVoiceState("idle")
+              setSubtitle("Listening for next command...")
+              setTimeout(() => {
+                if (isMountedRef.current && !isProcessingRef.current && !isAssistantAudioPlaying()) {
+                  startListeningRef.current?.()
+                }
+              }, 600)
+            } else {
+              setVoiceState("idle")
+              setSubtitle("Response complete. Tap mic to speak.")
+            }
+          },
+        })
+      } catch (err) {
+        console.warn("TTS playback error:", err)
+      } finally {
+        if (isMountedRef.current) {
           stopAudioCapture()
-          isListeningRef.current = false
-          setVoiceState("idle")
-          setSubtitle("Microphone turned off. Tap mic to speak.")
-        },
-        onEnd: () => {
-          stopAudioCapture()
-          isListeningRef.current = false
-          setVoiceState("idle")
-          setSubtitle("Response complete. Tap mic to speak.")
-        },
-      })
+          isProcessingRef.current = false
+          if (wakeWordEnabled) {
+            setVoiceState("idle")
+            setSubtitle("Listening for next command...")
+            setTimeout(() => {
+              if (isMountedRef.current && !isProcessingRef.current && !isAssistantAudioPlaying()) {
+                startListeningRef.current?.()
+              }
+            }, 600)
+          } else {
+            setVoiceState("idle")
+            setSubtitle("Response complete. Tap mic to speak.")
+          }
+        }
+      }
     },
-    [isAudioMuted, stopAudioCapture],
+    [isAudioMuted, stopAudioCapture, wakeWordEnabled],
   )
 
-  useEffect(() => {
-    speakTextRef.current = speakText
-  }, [speakText])
-
-  // Handle Query Submission (Voice or Text)
+  // Handle Processing query against CHAI multi-agent backend
   const handleProcessQuery = useCallback(
     async (queryText: string) => {
       const clean = queryText.trim()
-      if (!clean) return
+      if (!clean) {
+        isProcessingRef.current = false
+        setVoiceState("idle")
+        return
+      }
 
+      // Stop all mic capture and previous audio before processing
       stopAudioCapture()
       stopAssistantAudio()
+      clearSilenceTimer()
 
+      isProcessingRef.current = true
       setHasExecutedCommand(true)
       setForceCenterView(false)
+      setVoiceState("thinking")
+      setSubtitle("Thinking...")
+      setInputValue("")
 
       const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 
-      // Add to transcript
+      // Add user message to transcript
       const userEntry: TranscriptEntry = {
         id: `user-${Date.now()}`,
         role: "user",
@@ -283,32 +347,38 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
         time: timeStr,
       }
       setTranscriptHistory((prev) => [...prev, userEntry])
-      setSubtitle(`"${clean}"`)
-      setInputValue("")
-      setVoiceState("thinking")
+
+      const abortController = new AbortController()
+      abortControllerRef.current = abortController
 
       try {
         let aiAnswer = ""
 
         if (onSubmitVoicePrompt) {
-          const res = await onSubmitVoicePrompt(clean)
-          if (typeof res === "string" && res) {
-            aiAnswer = res
+          try {
+            const res = await onSubmitVoicePrompt(clean)
+            if (typeof res === "string" && res) {
+              aiAnswer = res
+            }
+          } catch (err) {
+            console.warn("onSubmitVoicePrompt failed:", err)
           }
         }
 
-        if (!aiAnswer) {
-          let res = await fetch(`${API_BASE}/api/chat`, {
+        if (!aiAnswer && !abortController.signal.aborted) {
+          let res = await fetch(`${API_BASE}/api/solve`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: clean, problem: clean, mode: "ask" }),
+            body: JSON.stringify({ problem: clean, mode: "ask" }),
+            signal: abortController.signal,
           })
 
           if (!res.ok) {
-            res = await fetch(`${API_BASE}/api/solve`, {
+            res = await fetch(`${API_BASE}/api/chat`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ problem: clean, mode: "ask" }),
+              body: JSON.stringify({ message: clean, problem: clean, mode: "ask" }),
+              signal: abortController.signal,
             })
           }
 
@@ -316,14 +386,18 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
 
           const data = await res.json()
           const rawAnswer =
-            data.message ||
             data.final_answer ||
             data.final_synthesized_answer ||
+            data.message ||
             "Task executed successfully across multi-agent nodes."
-          aiAnswer = rawAnswer.replace(/\\u([0-9a-fA-F]{4})/g, (_: string, hex: string) =>
-            String.fromCharCode(parseInt(hex, 16))
+          aiAnswer = cleanTextForDisplay(
+            rawAnswer.replace(/\\u([0-9a-fA-F]{4})/g, (_: string, hex: string) =>
+              String.fromCharCode(parseInt(hex, 16))
+            )
           )
         }
+
+        if (!isMountedRef.current || abortController.signal.aborted) return
 
         const assistantEntry: TranscriptEntry = {
           id: `ai-${Date.now()}`,
@@ -347,9 +421,20 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
         }
         setCommandResults((prev) => [newResult, ...prev])
 
-        speakTextRef.current?.(aiAnswer)
-      } catch {
-        const fallbackAnswer = `Analysis complete for: "${clean}". CHAI has synthesized the core objectives across knowledge clusters. Ready for next command.`
+        // Automatic Text-to-Speech output
+        await speakTextRef.current?.(aiAnswer)
+      } catch (err: any) {
+        if (!isMountedRef.current) return
+        if (err.name === "AbortError" || abortController.signal.aborted) {
+          console.log("Query processing cancelled")
+          setVoiceState("idle")
+          setSubtitle("Request cancelled. Tap mic to speak.")
+          isProcessingRef.current = false
+          return
+        }
+
+        console.error("Voice processing error:", err)
+        const fallbackAnswer = `Analysis complete for: "${clean}". CHAI has processed your request.`
         const assistantEntry: TranscriptEntry = {
           id: `ai-${Date.now()}`,
           role: "assistant",
@@ -357,343 +442,296 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         }
         setTranscriptHistory((prev) => [...prev, assistantEntry])
-        speakTextRef.current?.(fallbackAnswer)
+
+        setSubtitle("Backend service unavailable. Tap mic to retry.")
+        setVoiceState("idle")
+        isProcessingRef.current = false
       }
     },
-    [onSubmitVoicePrompt, stopAudioCapture],
+    [onSubmitVoicePrompt, stopAudioCapture, clearSilenceTimer],
   )
+
+  // Finalize transcript and submit exactly once
+  const finalizeAndSubmit = useCallback(() => {
+    if (!isMountedRef.current || isProcessingRef.current) return
+
+    clearSilenceTimer()
+
+    const rawTranscript = currentTranscriptRef.current.trim()
+    if (!rawTranscript) {
+      console.log("[Voice] Transcript is empty, ignoring submission")
+      return
+    }
+
+    // Idempotency lock: prevent any duplicate submissions
+    isProcessingRef.current = true
+
+    // Stop microphone capture and speech recognition cleanly before submitting
+    stopAudioCapture()
+
+    // Detect wake phrase if present and strip prefix
+    let processedQuery = rawTranscript
+    const wakeMatch = detectWakePhrase(rawTranscript)
+    if (wakeMatch) {
+      setLastWakePhrase(wakeMatch.phrase)
+      setWakeFlashActive(true)
+      setTimeout(() => setWakeFlashActive(false), 2000)
+      processedQuery = wakeMatch.trailingQuery || rawTranscript
+    }
+
+    const cleanQuery = processedQuery.trim()
+    if (!cleanQuery) {
+      isProcessingRef.current = false
+      setVoiceState("idle")
+      setSubtitle("Ready. Tap mic to speak.")
+      return
+    }
+
+    // Transition state: listening -> thinking
+    setVoiceState("thinking")
+    setSubtitle("Thinking...")
+
+    handleProcessQueryRef.current?.(cleanQuery)
+  }, [stopAudioCapture, clearSilenceTimer])
+
+  // Start Listening with Speech Recognition & 2.5s Silence Detection
+  const startListening = useCallback(async () => {
+    if (!isMountedRef.current || isProcessingRef.current || isAssistantAudioPlaying()) return
+
+    // Clean up any ongoing capture
+    stopAudioCapture()
+    stopAssistantAudio()
+    clearSilenceTimer()
+
+    hasSpeechRef.current = false
+    currentTranscriptRef.current = ""
+    setVoiceState("listening")
+    setSubtitle("Listening...")
+    setInputValue("")
+
+    const SpeechRecognitionClass =
+      typeof window !== "undefined"
+        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        : null
+
+    if (!SpeechRecognitionClass) {
+      console.warn("Speech recognition not supported in this browser.")
+      setSubtitle("Speech recognition is not supported in this browser. Please type below.")
+      setVoiceState("idle")
+      return
+    }
+
+    // 1. Microphone capture for real-time visualizer
+    try {
+      if (navigator.mediaDevices?.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        })
+        mediaStreamRef.current = stream
+
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
+        if (AudioContextClass) {
+          const audioCtx = new AudioContextClass()
+          audioContextRef.current = audioCtx
+          const source = audioCtx.createMediaStreamSource(stream)
+          const analyser = audioCtx.createAnalyser()
+          analyser.fftSize = 256
+          analyser.smoothingTimeConstant = 0.8
+          source.connect(analyser)
+          setAudioAnalyser(analyser)
+
+          const freqData = new Uint8Array(analyser.frequencyBinCount)
+          const monitorAudio = () => {
+            if (!isMountedRef.current || !mediaStreamRef.current) return
+            analyser.getByteFrequencyData(freqData)
+            let sumFreq = 0
+            for (let i = 0; i < freqData.length; i++) {
+              sumFreq += freqData[i]
+            }
+            const avgLevel = sumFreq / freqData.length / 255
+            setAudioLevel(avgLevel)
+            animationFrameRef.current = requestAnimationFrame(monitorAudio)
+          }
+          animationFrameRef.current = requestAnimationFrame(monitorAudio)
+        }
+      }
+    } catch (err: any) {
+      console.warn("Microphone access notice:", err)
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setSubtitle("Microphone permission denied. Please allow microphone access to speak.")
+        setVoiceState("idle")
+        stopAudioCapture()
+        return
+      }
+    }
+
+    // 2. Speech recognition session
+    try {
+      const recognition = new SpeechRecognitionClass()
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognition.lang = "en-US"
+
+      recognition.onresult = (event: any) => {
+        if (!isMountedRef.current || isProcessingRef.current) return
+
+        let interim = ""
+        let final = ""
+        for (let i = 0; i < event.results.length; i++) {
+          const res = event.results[i]
+          if (res.isFinal) {
+            final += " " + (res[0]?.transcript || "")
+          } else {
+            interim += " " + (res[0]?.transcript || "")
+          }
+        }
+
+        const combined = (final + " " + interim).replace(/\s+/g, " ").trim()
+        if (combined) {
+          currentTranscriptRef.current = combined
+          hasSpeechRef.current = true
+          setSubtitle(`"${combined}"`)
+          setInputValue(combined)
+
+          // Reset silence timer whenever new speech is detected
+          clearSilenceTimer()
+
+          // Stop listening and finalize transcript after approximately 2.5s continuous silence
+          silenceTimerRef.current = setTimeout(() => {
+            console.log("[SilenceDetector] 2.5s silence reached. Finalizing:", currentTranscriptRef.current)
+            finalizeAndSubmitRef.current?.()
+          }, SILENCE_TIMEOUT_MS)
+        }
+      }
+
+      recognition.onerror = (event: any) => {
+        if (!isMountedRef.current || isProcessingRef.current) return
+        console.warn("Speech recognition event error:", event.error)
+
+        if (event.error === "no-speech") {
+          return
+        }
+
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          stopAudioCapture()
+          clearSilenceTimer()
+          setVoiceState("idle")
+          setSubtitle("Microphone permission denied. Please allow microphone access.")
+          return
+        }
+
+        if (event.error === "audio-capture") {
+          stopAudioCapture()
+          clearSilenceTimer()
+          setVoiceState("idle")
+          setSubtitle("No microphone detected. Check your audio device.")
+          return
+        }
+
+        // If speech was already recognized, submit it
+        if (currentTranscriptRef.current.trim()) {
+          finalizeAndSubmitRef.current?.()
+        } else {
+          stopAudioCapture()
+          clearSilenceTimer()
+          setVoiceState("idle")
+          setSubtitle("Speech recognition interrupted. Tap mic to retry.")
+        }
+      }
+
+      recognition.onend = () => {
+        if (!isMountedRef.current || isProcessingRef.current) return
+
+        if (currentTranscriptRef.current.trim()) {
+          if (!silenceTimerRef.current) {
+            finalizeAndSubmitRef.current?.()
+          }
+          return
+        }
+
+        if (hasSpeechRef.current) {
+          finalizeAndSubmitRef.current?.()
+        }
+      }
+
+      recognition.start()
+      activeSpeechRecRef.current = recognition
+    } catch (recErr) {
+      console.warn("Failed to start SpeechRecognition:", recErr)
+      setSubtitle("Could not start speech recognition. Tap mic to retry.")
+      setVoiceState("idle")
+      stopAudioCapture()
+    }
+  }, [stopAudioCapture, clearSilenceTimer])
+
+  useEffect(() => {
+    speakTextRef.current = speakText
+  }, [speakText])
 
   useEffect(() => {
     handleProcessQueryRef.current = handleProcessQuery
   }, [handleProcessQuery])
 
-  // Start Real Microphone Recording with Web Audio Silence Detection (4.5s)
-  const startAudioRecording = useCallback(async () => {
-    if (!isListeningRef.current || isAssistantAudioPlaying()) return
-
-    stopAudioCapture()
-
-    try {
-      if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-        setSubtitle("Microphone access is unavailable.")
-        setVoiceState("idle")
-        return
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
-      mediaStreamRef.current = stream
-
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
-      const audioCtx = new AudioContextClass()
-      audioContextRef.current = audioCtx
-
-      const source = audioCtx.createMediaStreamSource(stream)
-      const analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 256
-      analyser.smoothingTimeConstant = 0.8
-      source.connect(analyser)
-      setAudioAnalyser(analyser)
-
-      // MediaRecorder initialization
-      let mimeType = "audio/webm;codecs=opus"
-      if (typeof MediaRecorder !== "undefined") {
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = "audio/webm"
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = "audio/ogg;codecs=opus"
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-              mimeType = ""
-            }
-          }
-        }
-      }
-
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
-      mediaRecorderRef.current = recorder
-      audioChunksRef.current = []
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
-        }
-      }
-
-      recorder.onstop = async () => {
-        const chunks = audioChunksRef.current
-        audioChunksRef.current = []
-        if (!chunks.length) {
-          if (isListeningRef.current && !isAssistantAudioPlaying()) {
-            setSubtitle("Listening to your voice...")
-            startAudioRecordingRef.current?.()
-          }
-          return
-        }
-
-        const audioBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" })
-        if (audioBlob.size < 150) {
-          if (isListeningRef.current && !isAssistantAudioPlaying()) {
-            setSubtitle("Listening to your voice...")
-            startAudioRecordingRef.current?.()
-          }
-          return
-        }
-
-        setVoiceState("thinking")
-        setSubtitle("Transcribing speech...")
-
-        try {
-          const formData = new FormData()
-          formData.append("audio", audioBlob, "speech.webm")
-
-          let res = await fetch("http://localhost:8000/api/voice/stt", {
-            method: "POST",
-            body: formData,
-          })
-
-          if (!res.ok) {
-            res = await fetch("http://localhost:8000/api/stt", {
-              method: "POST",
-              body: formData,
-            })
-          }
-
-          if (!res.ok) throw new Error(`STT failed with status ${res.status}`)
-
-          const data = await res.json()
-          let transcript = (data.text || data.transcript || "").trim()
-
-          // If Gemini STT hits quota exhaustion or returns empty, fallback to live recognized browser transcript
-          if (!transcript && liveSpeechTranscriptRef.current) {
-            transcript = liveSpeechTranscriptRef.current.trim()
-          }
-
-          // Check for wake word in transcribed speech and strip it from the query
-          if (transcript) {
-            const wakeMatch = detectWakePhrase(transcript)
-            if (wakeMatch) {
-              console.log(`[STT] Wake phrase "${wakeMatch.phrase}" found in STT transcript — stripping prefix`)
-              setLastWakePhrase(wakeMatch.phrase)
-              setWakeFlashActive(true)
-              setTimeout(() => setWakeFlashActive(false), 2000)
-              // Use only the trailing query portion, or the full transcript if nothing follows
-              transcript = wakeMatch.trailingQuery || transcript
-            }
-          }
-
-          if (transcript) {
-            setSubtitle(`"${transcript}"`)
-            liveSpeechTranscriptRef.current = ""
-            // Auto-submit transcript immediately to existing solve flow
-            await handleProcessQueryRef.current?.(transcript)
-          } else {
-            setSubtitle("No speech was detected.")
-            setVoiceState("listening")
-            if (isListeningRef.current && !isAssistantAudioPlaying()) {
-              startAudioRecordingRef.current?.()
-            }
-          }
-        } catch (sttErr) {
-          console.error("STT transcription notice:", sttErr)
-          const fallback = liveSpeechTranscriptRef.current.trim()
-          if (fallback) {
-            setSubtitle(`"${fallback}"`)
-            liveSpeechTranscriptRef.current = ""
-            await handleProcessQueryRef.current?.(fallback)
-          } else {
-            setSubtitle("Could not transcribe speech.")
-            setVoiceState("listening")
-            if (isListeningRef.current && !isAssistantAudioPlaying()) {
-              startAudioRecordingRef.current?.()
-            }
-          }
-        }
-      }
-
-      hasSpeechRef.current = false
-      silenceStartRef.current = null
-      recordingStartRef.current = Date.now()
-      isRecordingRef.current = true
-      liveSpeechTranscriptRef.current = ""
-
-      // Launch parallel real-time browser speech recognition for zero-quota speech fallback
-      const SpeechRecognitionClass =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      if (SpeechRecognitionClass) {
-        try {
-          const recognition = new SpeechRecognitionClass()
-          recognition.continuous = true
-          recognition.interimResults = true
-          recognition.lang = "en-US"
-          recognition.onresult = (event: any) => {
-            let combined = ""
-            for (let i = 0; i < event.results.length; i++) {
-              combined += " " + (event.results[i][0]?.transcript || "")
-            }
-            const candidate = combined.trim()
-            if (candidate) {
-              liveSpeechTranscriptRef.current = candidate
-              setSubtitle(`"${candidate}"`)
-              setInputValue(candidate)
-              hasSpeechRef.current = true
-              silenceStartRef.current = null
-            }
-          }
-          recognition.onerror = () => {}
-          recognition.onend = () => {
-            if (isRecordingRef.current && !isAssistantAudioPlaying()) {
-              try {
-                recognition.start()
-              } catch {}
-            }
-          }
-          recognition.start()
-          activeSpeechRecRef.current = recognition
-        } catch {}
-      }
-
-      recorder.start(250)
-      setVoiceState("listening")
-      setSubtitle("Listening to your voice...")
-
-      // Real silence detection loop using AnalyserNode
-      const timeData = new Uint8Array(analyser.frequencyBinCount)
-      const freqData = new Uint8Array(analyser.frequencyBinCount)
-
-      const monitorAudio = () => {
-        if (!isRecordingRef.current) return
-
-        // 1. Frequency visualizer calculation
-        analyser.getByteFrequencyData(freqData)
-        let sumFreq = 0
-        for (let i = 0; i < freqData.length; i++) {
-          sumFreq += freqData[i]
-        }
-        const avgLevel = sumFreq / freqData.length / 255
-        setAudioLevel(avgLevel)
-
-        // 2. RMS calculation from time domain data
-        analyser.getByteTimeDomainData(timeData)
-        let sumSquares = 0
-        for (let i = 0; i < timeData.length; i++) {
-          const norm = (timeData[i] - 128) / 128
-          sumSquares += norm * norm
-        }
-        const rms = Math.sqrt(sumSquares / timeData.length)
-
-        const now = Date.now()
-        const duration = now - recordingStartRef.current
-
-        // 3. Speech & silence state machine
-        if (rms >= SPEECH_RMS_THRESHOLD) {
-          if (!hasSpeechRef.current) {
-            hasSpeechRef.current = true
-            setSubtitle("Speech detected, listening...")
-          }
-          // Reset silence timer whenever speech is active
-          silenceStartRef.current = null
-        } else if (hasSpeechRef.current && duration >= MIN_RECORDING_MS) {
-          // Speech was previously detected, now check continuous silence
-          if (rms < SILENCE_RMS_THRESHOLD) {
-            if (silenceStartRef.current === null) {
-              silenceStartRef.current = now
-            } else if (now - silenceStartRef.current >= SILENCE_DURATION_MS) {
-              // 1.5 seconds of continuous silence after speech -> auto stop!
-              console.log("Automatic silence detected (1.5s) - auto-stopping recording")
-              isRecordingRef.current = false
-              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-                try {
-                  mediaRecorderRef.current.stop()
-                } catch {}
-              }
-              return
-            }
-          } else {
-            silenceStartRef.current = null
-          }
-        }
-
-        // 4. Safety maximum recording timeout
-        if (duration >= MAX_RECORDING_MS) {
-          console.log("Max recording safety limit reached - stopping recording")
-          isRecordingRef.current = false
-          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-            try {
-              mediaRecorderRef.current.stop()
-            } catch {}
-          }
-          return
-        }
-
-        animationFrameRef.current = requestAnimationFrame(monitorAudio)
-      }
-
-      animationFrameRef.current = requestAnimationFrame(monitorAudio)
-    } catch (err: any) {
-      console.warn("Microphone access error:", err)
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        setSubtitle("Microphone permission required for voice.")
-      } else {
-        setSubtitle("Microphone unavailable.")
-      }
-      setVoiceState("idle")
-    }
-  }, [stopAudioCapture])
+  useEffect(() => {
+    finalizeAndSubmitRef.current = finalizeAndSubmit
+  }, [finalizeAndSubmit])
 
   useEffect(() => {
-    startAudioRecordingRef.current = startAudioRecording
-  }, [startAudioRecording])
+    startListeningRef.current = startListening
+  }, [startListening])
 
   // Toggle Listening State
   const toggleListening = useCallback(async () => {
-    // If speaking, immediately interrupt, stop audio, and turn mic OFF
+    // 1. If speaking or audio playing: immediately stop TTS and return to idle
     if (voiceState === "speaking" || isAssistantAudioPlaying()) {
       stopAssistantAudio()
       stopAudioCapture()
-      isListeningRef.current = false
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel()
       }
+      isProcessingRef.current = false
       setVoiceState("idle")
-      setSubtitle("Microphone turned off. Tap mic to speak.")
+      setSubtitle("Speech stopped. Tap mic to speak.")
       return
     }
 
+    // 2. If thinking/processing: abort request and return to idle
+    if (voiceState === "thinking" || isProcessingRef.current) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+        abortControllerRef.current = null
+      }
+      isProcessingRef.current = false
+      setVoiceState("idle")
+      setSubtitle("Request cancelled. Tap mic to speak.")
+      return
+    }
+
+    // 3. If currently listening:
     if (voiceState === "listening") {
-      // Tactile immediate submit: if user tapped orb or mic button after speaking, immediately process STT
-      const duration = Date.now() - recordingStartRef.current
-      if (
-        mediaRecorderRef.current &&
-        mediaRecorderRef.current.state === "recording" &&
-        (hasSpeechRef.current || duration > 400)
-      ) {
-        console.log("Tactile submit: user tapped orb/mic while speaking - triggering immediate STT")
-        setSubtitle("Transcribing speech...")
-        setVoiceState("thinking")
-        isRecordingRef.current = false
-        try {
-          mediaRecorderRef.current.stop()
-        } catch {}
+      const currentTranscript = currentTranscriptRef.current.trim()
+      // Tactile immediate submit: if user already spoke, submit immediately without waiting for 2.5s timer
+      if (currentTranscript) {
+        console.log("Tactile submit: user tapped mic button with active speech")
+        finalizeAndSubmitRef.current?.()
         return
       }
 
-      isListeningRef.current = false
+      // No speech yet: pause listening and return to idle
+      clearSilenceTimer()
       stopAudioCapture()
       setVoiceState("idle")
-      setSubtitle("Microphone paused. Ready.")
+      setSubtitle("Microphone paused. Tap mic to speak.")
       return
     }
 
-    isListeningRef.current = true
-    setVoiceState("listening")
-    setSubtitle("Listening to your voice...")
-    await startAudioRecording()
-  }, [voiceState, stopAudioCapture, startAudioRecording])
+    // 4. If currently idle: start listening
+    await startListening()
+  }, [voiceState, stopAudioCapture, clearSilenceTimer, startListening])
 
   // ─── "Hey CHAI" Wake Word Integration ───────────────────────────────────────
   const { isWakeWordActive, wakeWordSupported, pause: pauseWakeWord, resume: resumeWakeWord } = useWakeWord({
@@ -709,14 +747,12 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
       } else {
         // User only said "Hey CHAI" — activate mic and start listening
         if (voiceState === "idle" || voiceState === "listening") {
-          isListeningRef.current = true
-          setVoiceState("listening")
           setSubtitle('"Hey CHAI" detected! Listening for your command...')
-          startAudioRecordingRef.current?.()
+          startListeningRef.current?.()
         }
       }
     },
-    enabled: wakeWordEnabled && voiceState !== "speaking" && voiceState !== "thinking",
+    enabled: wakeWordEnabled && voiceState === "idle",
     cooldownMs: 4000,
   })
 
@@ -731,15 +767,20 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
   }, [voiceState, wakeWordEnabled, pauseWakeWord, resumeWakeWord])
 
   useEffect(() => {
+    isMountedRef.current = true
+
     if (initialPrompt) {
       handleProcessQuery(initialPrompt)
     } else {
-      isListeningRef.current = true
-      startAudioRecording()
+      startListening()
     }
 
     return () => {
-      isListeningRef.current = false
+      isMountedRef.current = false
+      clearSilenceTimer()
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
       stopAssistantAudio()
       stopAudioCapture()
     }
@@ -821,9 +862,7 @@ export function AssistantSpeech({ onBack, initialPrompt, onSubmitVoicePrompt }: 
           )}
 
           <div className="flex items-center gap-2.5">
-            <span className="grid size-8 place-items-center rounded-xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 text-white shadow-[0_0_15px_rgba(0,245,255,0.4)]">
-              <Sparkles className="size-4" />
-            </span>
+            <ChaiLogo variant="icon" size="sm" />
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold tracking-wider">CHAI // VOICE CORE</span>
